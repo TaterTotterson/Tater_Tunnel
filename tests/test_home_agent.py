@@ -30,6 +30,7 @@ class FakeVpsClient:
         self.claims = []
         self.added_peers = []
         self.removed_peers = []
+        self.missing_peer_ids = set()
         self.relay_requests = []
         self.relay_responses = []
         self.health_payload = {
@@ -71,6 +72,8 @@ class FakeVpsClient:
 
     def remove_peer(self, base_url, peer_id):
         self.removed_peers.append((base_url, peer_id))
+        if peer_id in self.missing_peer_ids:
+            raise AgentError(HTTPStatus.NOT_FOUND, "VPS Agent: Peer not found")
         return {"state": {"peers": []}}
 
     def poll_relay(self, base_url, token):
@@ -270,6 +273,30 @@ class HomeAgentServiceTest(unittest.TestCase):
         result = self.service.revoke_device(device_id)
 
         self.assertEqual(result["state"]["devices"], [])
+
+    def test_revoke_device_removes_local_device_when_vps_peer_is_already_missing(self):
+        vps_client = FakeVpsClient()
+        service = HomeAgentService(
+            ConfigStore(self.state_file),
+            FixedKeyProvider(),
+            vps_client,
+            WireGuardClientConfigRuntime(self.config_file),
+        )
+        service.pair_vps(
+            {
+                "vpsAddress": "tunnel.example.com",
+                "pairingCode": "ABCD-1234",
+                "securityMode": "safe",
+            }
+        )
+        added = service.add_device({"person": "Alex", "name": "Old iPhone", "type": "Phone"})
+        device_id = added["state"]["devices"][0]["id"]
+        vps_client.missing_peer_ids.add(device_id)
+
+        result = service.revoke_device(device_id)
+
+        self.assertEqual(result["state"]["devices"], [])
+        self.assertEqual(vps_client.removed_peers[0], ("http://tunnel.example.com:4174", device_id))
 
     def test_health_check_marks_live_wireguard_devices(self):
         vps_client = FakeVpsClient()

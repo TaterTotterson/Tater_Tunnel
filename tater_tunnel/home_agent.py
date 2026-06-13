@@ -279,7 +279,11 @@ class HomeAgentService:
         if len(state["devices"]) == original_count:
             raise AgentError(HTTPStatus.NOT_FOUND, "Device not found")
 
-        self._sync_remove_peer(state, device_id)
+        try:
+            self._sync_remove_peer(state, device_id)
+        except AgentError as error:
+            if error.status != HTTPStatus.NOT_FOUND:
+                raise
 
         state["lastCheck"] = utc_now()
         return self._with_state(self.store.save(state))
