@@ -1,0 +1,91 @@
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <meta name="description" content="Secure remote access to Tater without port forwarding, public dashboards, cloud tunnel accounts, or advanced networking setup.">
+          <title>Tater Tunnel | MVP Spec</title>
+          <link rel="stylesheet" href="../assets/site.css">
+          <script src="../assets/site.js" defer></script>
+        </head>
+        <body data-page="docs">
+          <header class="site-header">
+            <a class="brand" href="../index.html" aria-label="Tater Tunnel home">
+              <img src="../assets/images/tater-logo-primary.png" alt="Tater logo">
+              <span>Tater Tunnel</span>
+            </a>
+            <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav">Menu</button>
+            <nav class="site-nav" id="site-nav">
+              <a class="nav-link" href="../index.html">Home</a>
+<a class="nav-link" href="../setup/index.html">Setup</a>
+<a class="nav-link" href="../routes/index.html">Routes</a>
+<a class="nav-link" href="../security/index.html">Security</a>
+<a class="nav-link" href="../troubleshooting/index.html">Troubleshooting</a>
+<a class="nav-link is-active" href="../wiki/index.html">Docs</a>
+<a class="nav-link nav-link-github" href="https://github.com/TaterTotterson/Tater_Tunnel" target="_blank" rel="noreferrer">GitHub</a>
+            </nav>
+          </header>
+          <main>
+
+    <section class="sub-hero doc-sub-hero">
+      <span class="eyebrow">Generated docs</span>
+      <h1>MVP Spec</h1>
+      <p>Secure remote access to Tater without port forwarding, public dashboards, cloud tunnel accounts, or advanced networking setup.</p>
+    </section>
+    <article class="section doc-content">
+      <h1>Tater Tunnel MVP Spec</h1>
+<h2>Product Promise</h2>
+<p>Secure remote access to Tater without port forwarding, public dashboards, cloud tunnel accounts, or advanced networking setup.</p>
+<h2>MVP User Journey</h2>
+<ol><li>User rents or already has a VPS.</li><li>User installs Tater VPS Agent.</li><li>VPS Agent shows a pairing code.</li><li>User opens Tater Home Agent.</li><li>User enters VPS address and pairing code.</li><li>Home Agent claims the VPS and disables pairing mode.</li><li>Home Agent keeps an outbound relay connection to the VPS.</li><li>User adds a phone, laptop, or tablet.</li><li>Home Agent creates a WireGuard device enrollment for VPN mode.</li><li>User scans a QR code in the WireGuard app.</li><li>Device can reach approved Tater services remotely.</li><li>User can revoke the device from Home Agent.</li></ol>
+<h2>Components</h2>
+<h3>Tater VPS Agent</h3>
+<p>Runs on the VPS.</p>
+<p>MVP responsibilities:</p>
+<ul><li>Install and configure WireGuard.</li><li>Expose one UDP WireGuard port.</li><li>Accept one pairing claim from Home Agent.</li><li>Store the Home Agent relay authority record.</li><li>Add and remove WireGuard peers when instructed by Home Agent.</li><li>Bridge approved device traffic to the Home Agent relay path.</li><li>Report basic health.</li></ul>
+<p>Non-responsibilities:</p>
+<ul><li>No browser dashboard.</li><li>No service-level approval decisions.</li><li>No user or permission management.</li><li>No public access to Tater services.</li></ul>
+<h3>Tater Home Agent</h3>
+<p>Runs on the user&#x27;s home machine, Docker host, Unraid server, or future Home Assistant add-on.</p>
+<p>MVP responsibilities:</p>
+<ul><li>Claim a VPS Agent.</li><li>Maintain an outbound relay path to the VPS.</li><li>Generate remote-device WireGuard enrollment payloads.</li><li>Register Tater device identities.</li><li>Add and revoke devices.</li><li>Show tunnel health.</li><li>Gate Tater service access by approved device identity.</li></ul>
+<h2>MVP Screens</h2>
+<h3>Tunnel Status</h3>
+<p>Shows:</p>
+<ul><li>Tunnel state.</li><li>VPS address.</li><li>WireGuard endpoint.</li><li>Home relay state.</li><li>Last health check.</li><li>Number of enrolled devices.</li></ul>
+<p>Primary actions:</p>
+<ul><li>Pair VPS.</li><li>Add Device.</li><li>Run Check.</li></ul>
+<h3>VPS Pairing</h3>
+<p>Inputs:</p>
+<ul><li>VPS IP or domain.</li><li>Pairing code.</li><li>Security mode: Minimal, Safe, Lockdown.</li></ul>
+<p>States:</p>
+<ul><li>Waiting for VPS.</li><li>Pairing.</li><li>Connected.</li><li>Needs attention.</li></ul>
+<h3>Devices</h3>
+<p>Fields:</p>
+<ul><li>Person.</li><li>Device name.</li><li>Device type.</li><li>Approval state.</li><li>Last seen.</li></ul>
+<p>Actions:</p>
+<ul><li>Add device.</li><li>Revoke device.</li></ul>
+<p>Enrollment modes:</p>
+<ul><li>VPN Mode: scan a WireGuard QR with the official WireGuard app.</li><li>Future Tater App Mode: scan a Tater invite that installs/starts VPN internally.</li></ul>
+<h2>Explicit Non-Goals For MVP</h2>
+<ul><li>Multi-home support.</li><li>Multiple VPS support.</li><li>Temporary guests.</li><li>Site-to-site networking.</li><li>Direct NAS or camera access.</li><li>Home Assistant remote access.</li><li>Home Agent as a WireGuard peer.</li><li>Public web UI on the VPS.</li><li>Advanced roles beyond approved or revoked.</li></ul>
+<h2>Milestones</h2>
+<h3>Milestone 1: Prototype</h3>
+<ul><li>Static Home Agent UI.</li><li>MVP docs.</li><li>Trust boundary docs.</li><li>Simulated pairing and device enrollment.</li></ul>
+<h3>Milestone 2: Local Agent Skeleton</h3>
+<ul><li>Home Agent service.</li><li>Local API.</li><li>Persistent config store.</li><li>WireGuard key generation abstraction.</li><li>Device inventory model.</li></ul>
+<h3>Milestone 3: VPS Agent Skeleton</h3>
+<ul><li>VPS Agent service.</li><li>Pairing mode.</li><li>Claim endpoint.</li><li>Peer management interface.</li><li>Health endpoint.</li></ul>
+<h3>Milestone 4: Real Pairing</h3>
+<ul><li>Home Agent claims VPS Agent.</li><li>Pairing mode disables after claim.</li><li>Home Agent records relay status.</li><li>Home Agent can add and remove WireGuard peers.</li><li>Tunnel health is reported from both sides.</li></ul>
+<h3>Milestone 5: Tater Service Gate</h3>
+<ul><li>Approved device identity required for Tater services.</li><li>Revoked devices lose both WireGuard peer access and Tater access.</li><li>Audit log records pairing, enrollment, and revocation.</li></ul>
+    </article>
+
+          </main>
+          <footer class="site-footer">
+            <p>Tater Tunnel docs are generated from this repository.</p>
+            <p><a href="https://github.com/TaterTotterson/Tater_Tunnel" target="_blank" rel="noreferrer">View the project on GitHub</a></p>
+          </footer>
+        </body>
+        </html>

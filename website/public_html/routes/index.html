@@ -1,0 +1,122 @@
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <meta name="description" content="Add and test approved Tater Tunnel relay routes from the Home Agent UI.">
+          <title>Tater Tunnel | Routes</title>
+          <link rel="stylesheet" href="../assets/site.css">
+          <script src="../assets/site.js" defer></script>
+        </head>
+        <body data-page="routes">
+          <header class="site-header">
+            <a class="brand" href="../index.html" aria-label="Tater Tunnel home">
+              <img src="../assets/images/tater-logo-primary.png" alt="Tater logo">
+              <span>Tater Tunnel</span>
+            </a>
+            <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav">Menu</button>
+            <nav class="site-nav" id="site-nav">
+              <a class="nav-link" href="../index.html">Home</a>
+<a class="nav-link" href="../setup/index.html">Setup</a>
+<a class="nav-link is-active" href="../routes/index.html">Routes</a>
+<a class="nav-link" href="../security/index.html">Security</a>
+<a class="nav-link" href="../troubleshooting/index.html">Troubleshooting</a>
+<a class="nav-link" href="../wiki/index.html">Docs</a>
+<a class="nav-link nav-link-github" href="https://github.com/TaterTotterson/Tater_Tunnel" target="_blank" rel="noreferrer">GitHub</a>
+            </nav>
+          </header>
+          <main>
+
+    <section class="sub-hero">
+      <span class="eyebrow">Routes</span>
+      <h1>Expose only the local apps you approve.</h1>
+      <p>Routes are named paths under the VPS relay. The phone opens the VPS tunnel IP, and the Home Agent proxies the request to a local target.</p>
+    </section>
+
+    <section class="section">
+      <div class="route-example">
+        <div>
+          <span class="eyebrow">Default</span>
+          <h2>Home Agent and Tunnel UI</h2>
+          <p>The built-in tunnel route is available at the base relay path after the phone is connected to WireGuard.</p>
+        </div>
+        <code>http://10.88.0.1:4174/relay/</code>
+      </div>
+      <div class="route-example">
+        <div>
+          <span class="eyebrow">Named route</span>
+          <h2>Main Tater app</h2>
+          <p>Add a route named <code>tater</code> to the Home Agent UI and point it at the local Tater app port.</p>
+        </div>
+        <code>http://10.88.0.1:4174/relay/tater/</code>
+      </div>
+      <div class="route-example">
+        <div>
+          <span class="eyebrow">LAN target</span>
+          <h2>Another local service</h2>
+          <p>Targets can also be another LAN machine if the Home Agent machine can reach it, for example an Emby host.</p>
+        </div>
+        <code>http://10.88.0.1:4174/relay/emby/</code>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <span class="eyebrow">Route settings</span>
+        <h2>Use the simple UI first, advanced switches only when an app needs them.</h2>
+      </div>
+      <div class="grid grid-3">
+        <article class="info-card">
+  <h3>Target URL</h3>
+  <p>The local URL the Home Agent can reach, such as http://127.0.0.1:8501 or http://10.4.20.204:8096.</p>
+  <div class="chip-row"><span class="chip">Required</span></div>
+</article>
+
+        <article class="info-card">
+  <h3>WebSockets</h3>
+  <p>Enable for apps that keep live UI state over WebSockets, streaming, or long-lived browser sessions.</p>
+  <div class="chip-row"><span class="chip">Advanced</span></div>
+</article>
+
+        <article class="info-card">
+  <h3>Host header</h3>
+  <p>Use only when an app expects its own public host or rejects the relay host.</p>
+  <div class="chip-row"><span class="chip">Advanced</span></div>
+</article>
+
+      </div>
+    </section>
+
+    <section class="section split-section split-section-reverse">
+      <figure class="image-panel">
+  <img src="../assets/images/tater-mobile-qr.png" alt="Tater mascot with mobile QR setup">
+  <figcaption>Once the phone VPN is on, every route uses the 10.88.0.1 VPS tunnel address.</figcaption>
+</figure>
+
+      <div class="split-copy">
+        <span class="eyebrow">Examples</span>
+        <h2>Route names become clean URLs.</h2>
+                <div class="command-box">
+          <div class="command-head">
+            <span>Access route examples</span>
+            <button type="button" data-copy-code>Copy</button>
+          </div>
+          <pre><code>Route name: tater
+Local target: http://127.0.0.1:8501
+Use: http://10.88.0.1:4174/relay/tater/
+
+Route name: emby
+Local target: http://10.4.20.204:8096
+Use: http://10.88.0.1:4174/relay/emby/</code></pre>
+        </div>
+
+      </div>
+    </section>
+
+          </main>
+          <footer class="site-footer">
+            <p>Tater Tunnel docs are generated from this repository.</p>
+            <p><a href="https://github.com/TaterTotterson/Tater_Tunnel" target="_blank" rel="noreferrer">View the project on GitHub</a></p>
+          </footer>
+        </body>
+        </html>

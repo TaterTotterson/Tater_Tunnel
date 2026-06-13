@@ -1,0 +1,112 @@
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <meta name="description" content="Tater Tunnel security model, trust boundaries, TLS, WireGuard, firewall ports, and hardening checklist.">
+          <title>Tater Tunnel | Security</title>
+          <link rel="stylesheet" href="../assets/site.css">
+          <script src="../assets/site.js" defer></script>
+        </head>
+        <body data-page="security">
+          <header class="site-header">
+            <a class="brand" href="../index.html" aria-label="Tater Tunnel home">
+              <img src="../assets/images/tater-logo-primary.png" alt="Tater logo">
+              <span>Tater Tunnel</span>
+            </a>
+            <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav">Menu</button>
+            <nav class="site-nav" id="site-nav">
+              <a class="nav-link" href="../index.html">Home</a>
+<a class="nav-link" href="../setup/index.html">Setup</a>
+<a class="nav-link" href="../routes/index.html">Routes</a>
+<a class="nav-link is-active" href="../security/index.html">Security</a>
+<a class="nav-link" href="../troubleshooting/index.html">Troubleshooting</a>
+<a class="nav-link" href="../wiki/index.html">Docs</a>
+<a class="nav-link nav-link-github" href="https://github.com/TaterTotterson/Tater_Tunnel" target="_blank" rel="noreferrer">GitHub</a>
+            </nav>
+          </header>
+          <main>
+
+    <section class="sub-hero">
+      <span class="eyebrow">Security</span>
+      <h1>The VPS is a relay, not the trust boss.</h1>
+      <p>The Home Agent owns device approval, relay tokens, route targets, and revocation. The VPS should hold only enough state to relay traffic and manage WireGuard peers.</p>
+    </section>
+
+    <section class="section">
+      <div class="grid grid-2">
+        <article class="info-card">
+  <h3>TLS for Home Agent to VPS</h3>
+  <p>The full setup path puts Caddy in front of the VPS Agent so pairing and relay management happen over HTTPS with automatic certificates.</p>
+  <div class="chip-row"><span class="chip">Caddy</span><span class="chip">443/tcp</span></div>
+</article>
+
+        <article class="info-card">
+  <h3>WireGuard for remote devices</h3>
+  <p>Phones and laptops use WireGuard to reach the VPS tunnel address. This gives the mobile VPN behavior users expect.</p>
+  <div class="chip-row"><span class="chip">51888/udp</span><span class="chip">QR profile</span></div>
+</article>
+
+        <article class="info-card">
+  <h3>Token-protected management</h3>
+  <p>After claim, sensitive VPS endpoints require the relay management token from the Home Agent.</p>
+  <div class="chip-row"><span class="chip">No public state dump</span></div>
+</article>
+
+        <article class="info-card">
+  <h3>Revocation removes access</h3>
+  <p>Revoking a device removes the WireGuard peer and the Home Agent device record.</p>
+  <div class="chip-row"><span class="chip">Lost device flow</span></div>
+</article>
+
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <span class="eyebrow">Firewall shape</span>
+        <h2>Blank VPS install keeps the raw agent port private.</h2>
+      </div>
+      <div class="port-table">
+        <div><strong>80/tcp</strong><span>Caddy HTTP and ACME challenge</span></div>
+        <div><strong>443/tcp</strong><span>Caddy HTTPS to 127.0.0.1:4174</span></div>
+        <div><strong>51888/udp</strong><span>WireGuard device VPN</span></div>
+        <div><strong>4174/tcp</strong><span>Localhost for Caddy, and tater0-only for VPN relay use</span></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <span class="eyebrow">Hardening checklist</span>
+        <h2>Before calling a setup production-ready.</h2>
+      </div>
+      <ul class="check-list">
+        <li>Use a real DNS name and HTTPS URL for Home Agent to VPS pairing.</li>
+        <li>Keep public TCP 4174 closed unless doing a short direct test.</li>
+        <li>Open UDP 51888 for WireGuard devices.</li>
+        <li>Use the Home Agent UI to revoke old or lost devices.</li>
+        <li>Keep route targets narrow. Do not expose raw LAN access by default.</li>
+        <li>Update the VPS with the same one-command installer when new tunnel fixes land.</li>
+      </ul>
+    </section>
+
+    <section class="section">
+              <div class="command-box">
+          <div class="command-head">
+            <span>Security checks</span>
+            <button type="button" data-copy-code>Copy</button>
+          </div>
+          <pre><code>curl -fsS https://tunnel.example.com/api/health
+sudo wg show tater0
+sudo ufw status verbose</code></pre>
+        </div>
+
+    </section>
+
+          </main>
+          <footer class="site-footer">
+            <p>Tater Tunnel docs are generated from this repository.</p>
+            <p><a href="https://github.com/TaterTotterson/Tater_Tunnel" target="_blank" rel="noreferrer">View the project on GitHub</a></p>
+          </footer>
+        </body>
+        </html>
