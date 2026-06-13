@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Tater Tunnel</title>
+    <link rel="stylesheet" href="styles.css?v=16">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <img class="brand-logo" src="assets/tater-logo-primary.png" alt="Tater">
+        </div>
+      </header>
+
+      <main>
+        <section class="status-band" aria-labelledby="statusTitle">
+          <div class="status-copy">
+            <p class="eyebrow">Home Relay</p>
+            <h1 id="statusTitle">Private remote access for Tater</h1>
+            <div class="status-pill" id="statusPill">
+              <span class="status-light" aria-hidden="true"></span>
+              <span id="statusText">Waiting for VPS pairing</span>
+            </div>
+            <div class="quick-actions">
+              <a href="#pairing" class="primary-link">Pair VPS</a>
+              <button class="secondary-button" id="quickAddButton" type="button">Add Device</button>
+              <button class="ghost-button" id="healthButton" type="button">Run Check</button>
+              <button class="ghost-button quiet-button" id="resetButton" type="button">Reset</button>
+            </div>
+          </div>
+
+          <div class="tunnel-scene" aria-label="Tater mascot connecting two ethernet cables">
+            <img
+              class="mascot-hero"
+              src="assets/tater-mascot-cable-connect.png"
+              alt="Tater mascot trying to plug two ethernet cables together"
+            >
+          </div>
+        </section>
+
+        <section class="metrics-strip" aria-label="Tunnel metrics">
+          <div>
+            <span>VPS</span>
+            <strong id="metricVps">Not paired</strong>
+          </div>
+          <div>
+            <span>VPN Endpoint</span>
+            <strong id="metricEndpoint">51888/udp</strong>
+          </div>
+          <div>
+            <span>Devices</span>
+            <strong id="metricDevices">0 approved</strong>
+          </div>
+          <div>
+            <span>Last Check</span>
+            <strong id="metricCheck">Never</strong>
+          </div>
+        </section>
+
+        <section class="workspace">
+          <div class="setup-stack">
+            <section class="tool-section" id="pairing" aria-labelledby="pairingTitle">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow">Step 1</p>
+                  <h2 id="pairingTitle">Pair Relay</h2>
+                </div>
+                <span class="section-state" id="pairingState">Open</span>
+              </div>
+
+              <div class="claim-summary" id="claimSummary" hidden>
+                <div>
+                  <span class="claim-label">VPS Claim</span>
+                  <strong id="claimStatus">Not claimed</strong>
+                  <small id="claimDetails">Pair a VPS relay to start.</small>
+                </div>
+                <button class="secondary-button" id="reclaimButton" type="button">Reclaim</button>
+              </div>
+
+              <form id="pairingForm" class="form-grid">
+                <label>
+                  <span>VPS IP or Domain</span>
+                  <input id="vpsAddress" name="vpsAddress" placeholder="tunnel.example.com" autocomplete="off">
+                </label>
+                <label>
+                  <span>Pairing Code</span>
+                  <input id="pairingCode" name="pairingCode" placeholder="ABCD-1234" autocomplete="off">
+                </label>
+                <label>
+                  <span>Security Mode</span>
+                  <select id="securityMode" name="securityMode">
+                    <option value="safe">Safe</option>
+                    <option value="minimal">Minimal</option>
+                    <option value="lockdown">Lockdown</option>
+                  </select>
+                </label>
+                <button class="primary-button full-width" type="submit">Claim VPS</button>
+                <button class="ghost-button full-width" id="cancelReclaimButton" type="button" hidden>Cancel</button>
+              </form>
+            </section>
+
+          </div>
+
+          <section class="devices-section" aria-labelledby="devicesTitle">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Step 2</p>
+                <h2 id="devicesTitle">VPN Devices</h2>
+              </div>
+              <button class="primary-button" id="addDeviceButton" type="button">Add Device</button>
+            </div>
+
+            <form id="deviceForm" class="device-form" hidden>
+              <label>
+                <span>Person</span>
+                <input id="personName" name="personName" placeholder="Alex">
+              </label>
+              <label>
+                <span>Device</span>
+                <input id="deviceName" name="deviceName" placeholder="Alex's iPhone">
+              </label>
+              <label>
+                <span>Type</span>
+                <select id="deviceType" name="deviceType">
+                  <option value="Phone">Phone</option>
+                  <option value="Laptop">Laptop</option>
+                  <option value="Tablet">Tablet</option>
+                  <option value="Desktop">Desktop</option>
+                </select>
+              </label>
+              <button class="secondary-button" type="submit">Create VPN QR</button>
+            </form>
+
+            <div class="qr-panel" id="qrPanel" hidden>
+              <div class="qr-code" aria-label="Device enrollment QR code">
+                <img id="qrImage" alt="WireGuard VPN QR code">
+              </div>
+              <div>
+                <p class="eyebrow">WireGuard VPN</p>
+                <strong id="qrDeviceName">New Device</strong>
+                <code id="qrToken">tt://pending</code>
+              </div>
+            </div>
+
+            <div class="empty-state" id="emptyState">
+              <strong>No devices yet</strong>
+              <span>Add a phone or laptop after the relay is paired.</span>
+            </div>
+
+            <div class="device-list" id="deviceList"></div>
+          </section>
+
+          <section class="tool-section access-section" aria-labelledby="accessTitle">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Step 3</p>
+                <h2 id="accessTitle">Access Routes</h2>
+              </div>
+              <button class="secondary-button" id="addRouteButton" type="button">Add Route</button>
+            </div>
+            <div class="route-list">
+              <label class="toggle-row">
+                <span>
+                  <strong>Tater Services</strong>
+                  <small id="taterRouteState">Through Home Relay</small>
+                </span>
+                <input type="checkbox" id="taterRoute" checked>
+              </label>
+              <label class="toggle-row muted">
+                <span>
+                  <strong>Local Network</strong>
+                  <small>Future VPN route</small>
+                </span>
+                <input type="checkbox" id="lanRoute" disabled>
+              </label>
+            </div>
+            <form id="routeForm" class="route-form" hidden>
+              <label>
+                <span>Name</span>
+                <input id="routeName" name="routeName" placeholder="tater" autocomplete="off">
+              </label>
+              <label>
+                <span>Local IP</span>
+                <input id="routeHost" name="routeHost" placeholder="127.0.0.1" autocomplete="off">
+              </label>
+              <label>
+                <span>Port</span>
+                <input id="routePort" name="routePort" placeholder="8501" inputmode="numeric" autocomplete="off">
+              </label>
+              <label>
+                <span>Path</span>
+                <input id="routePath" name="routePath" placeholder="/" autocomplete="off">
+              </label>
+              <details class="route-advanced">
+                <summary>Advanced</summary>
+                <label class="toggle-row">
+                  <span>
+                    <strong>WebSockets</strong>
+                    <small>Allow live app channels when supported.</small>
+                  </span>
+                  <input type="checkbox" id="routeWebsocket" checked>
+                </label>
+                <label>
+                  <span>Host Header</span>
+                  <input id="routeHostHeader" name="routeHostHeader" placeholder="Optional" autocomplete="off">
+                </label>
+              </details>
+              <button class="secondary-button" type="submit">Save Route</button>
+            </form>
+            <div class="relay-route-list" id="relayRouteList"></div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <script src="app.js?v=21"></script>
+  </body>
+</html>

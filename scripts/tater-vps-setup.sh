@@ -1,0 +1,727 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+DOC_FILE="$SCRIPT_DIR/../docs/VPS_INSTALL.md"
+DEFAULT_REPO_URL="https://github.com/TaterTotterson/Tater_Tunnel.git"
+REPO_URL="${TATER_TUNNEL_REPO:-$DEFAULT_REPO_URL}"
+TARBALL_URL="${TATER_TUNNEL_TARBALL:-}"
+BRANCH="${TATER_TUNNEL_BRANCH:-main}"
+SOURCE_DIR="${TATER_TUNNEL_SOURCE_DIR:-/opt/tater-tunnel-src}"
+NO_BOOTSTRAP="0"
+NO_RUN="0"
+IN_REPO_SOURCE="0"
+SERVICE_NAME="tater-tunnel-vps"
+SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME.service"
+
+if [ -f "$SCRIPT_DIR/install-vps-full.sh" ] && [ -f "$SCRIPT_DIR/install-vps-agent.sh" ]; then
+  IN_REPO_SOURCE="1"
+fi
+
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  RESET="$(printf '\033[0m')"
+  BOLD="$(printf '\033[1m')"
+  DIM="$(printf '\033[2m')"
+  ORANGE="$(printf '\033[38;5;208m')"
+  GREEN="$(printf '\033[38;5;113m')"
+  CYAN="$(printf '\033[38;5;45m')"
+  RED="$(printf '\033[38;5;203m')"
+else
+  RESET=""
+  BOLD=""
+  DIM=""
+  ORANGE=""
+  GREEN=""
+  CYAN=""
+  RED=""
+fi
+
+MENU_ITEMS=(
+  "Update existing install"
+  "Blank VPS full install"
+  "Advanced existing VPS install"
+  "View setup notes"
+  "Exit"
+)
+
+MENU_HELP=(
+  "Updates code, preserves pairing/state/service settings, and restarts the VPS Agent."
+  "Installs Tater VPS Agent, Caddy automatic HTTPS, WireGuard, and UFW rules."
+  "Installs only the Tater VPS Agent. You manage HTTPS, firewall, and proxy."
+  "Shows the install notes and port checklist."
+  "Leaves setup without changing anything."
+)
+
+usage() {
+  cat <<'EOF'
+Tater Tunnel VPS Setup
+
+Usage:
+  sudo ./scripts/tater-vps-setup.sh [options]
+
+One-command remote use:
+  curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \
+    -o /tmp/tater-vps-setup.sh && sudo bash /tmp/tater-vps-setup.sh
+
+This interactive launcher provides:
+  - Source download/update when launched standalone
+  - Safe update path for existing installs
+  - Arrow-key setup menu
+  - Blank VPS full install path
+  - Advanced existing VPS install path
+  - Setup summary and progress handoff
+
+Options:
+  --repo URL          Git repository URL to clone/update.
+  --branch NAME       Git branch to use. Default: main
+  --tarball URL       Download a tarball instead of using git.
+  --source-dir PATH   Source checkout directory. Default: /opt/tater-tunnel-src
+  --no-bootstrap      Do not download/update source first.
+  --no-run            Download/update only; do not launch the setup menu.
+  -h, --help          Show this help.
+
+Environment:
+  TATER_TUNNEL_REPO
+  TATER_TUNNEL_BRANCH
+  TATER_TUNNEL_TARBALL
+  TATER_TUNNEL_SOURCE_DIR
+EOF
+}
+
+clear_screen() {
+  if [ -t 1 ]; then
+    printf '\033[2J\033[H'
+  fi
+}
+
+print_logo() {
+  cat <<EOF
+${ORANGE}${BOLD}
+             .-""""""-.
+          .-'  .----.  '-.
+        .'    / .--. \\    '.
+       /     |  (  )  |     \\
+      |      |   '--' |      |
+      |      |  .--.  |      |
+       \\      \\ '--' /      /
+        '.     '----'     .'
+          '-.          .-'
+             '--------'
+${RESET}${BOLD}        TATER TUNNEL VPS SETUP${RESET}
+${DIM}        secure relay + WireGuard device VPN${RESET}
+EOF
+}
+
+pause() {
+  printf '\n%sPress Enter to continue...%s' "$DIM" "$RESET"
+  read -r _ || true
+}
+
+stage() {
+  printf '\n%s==>%s %s%s%s\n' "$CYAN" "$RESET" "$BOLD" "$1" "$RESET"
+}
+
+parse_args() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --repo)
+        REPO_URL="${2:?--repo requires a value}"
+        shift 2
+        ;;
+      --branch)
+        BRANCH="${2:?--branch requires a value}"
+        shift 2
+        ;;
+      --tarball)
+        TARBALL_URL="${2:?--tarball requires a value}"
+        shift 2
+        ;;
+      --source-dir)
+        SOURCE_DIR="${2:?--source-dir requires a value}"
+        shift 2
+        ;;
+      --no-bootstrap)
+        NO_BOOTSTRAP="1"
+        shift
+        ;;
+      --no-run)
+        NO_RUN="1"
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        echo "Unknown option: $1" >&2
+        usage >&2
+        exit 2
+        ;;
+    esac
+  done
+}
+
+require_root_for_bootstrap() {
+  if [ "$(id -u)" -ne 0 ]; then
+    clear_screen
+    print_logo
+    cat <<EOF
+
+${RED}${BOLD}Root access is needed for VPS setup.${RESET}
+
+Run:
+  sudo ./scripts/tater-vps-setup.sh
+
+EOF
+    exit 1
+  fi
+}
+
+require_root_for_install() {
+  if [ "$(id -u)" -ne 0 ]; then
+    clear_screen
+    print_logo
+    cat <<EOF
+
+${RED}${BOLD}Root access is needed for install steps.${RESET}
+
+Run:
+  sudo ./scripts/tater-vps-setup.sh
+
+EOF
+    exit 1
+  fi
+}
+
+require_bootstrap_packages() {
+  if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    if [ -n "$TARBALL_URL" ]; then
+      apt-get install -y ca-certificates curl tar
+    else
+      apt-get install -y ca-certificates git
+    fi
+    return
+  fi
+
+  if [ -n "$TARBALL_URL" ]; then
+    for command in curl tar; do
+      if ! command -v "$command" >/dev/null 2>&1; then
+        echo "$command is required. Install it and run setup again." >&2
+        exit 1
+      fi
+    done
+  elif ! command -v git >/dev/null 2>&1; then
+    echo "git is required. Install git or rerun with --tarball." >&2
+    exit 1
+  fi
+}
+
+download_from_git() {
+  install -d -m 0755 "$(dirname "$SOURCE_DIR")"
+
+  if [ -d "$SOURCE_DIR/.git" ]; then
+    git -C "$SOURCE_DIR" remote set-url origin "$REPO_URL"
+    git -C "$SOURCE_DIR" fetch --depth 1 origin "$BRANCH"
+    git -C "$SOURCE_DIR" checkout -B "$BRANCH" "origin/$BRANCH"
+  elif [ -e "$SOURCE_DIR" ]; then
+    local backup_dir
+    backup_dir="$SOURCE_DIR.backup.$(date +%Y%m%d%H%M%S)"
+    mv "$SOURCE_DIR" "$backup_dir"
+    git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$SOURCE_DIR"
+    printf '%sExisting non-git source moved to %s%s\n' "$DIM" "$backup_dir" "$RESET"
+  else
+    git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$SOURCE_DIR"
+  fi
+}
+
+download_from_tarball() {
+  local temp_dir
+  local archive
+  local extracted
+
+  temp_dir="$(mktemp -d)"
+  archive="$temp_dir/tater-tunnel.tar.gz"
+
+  curl -fsSL "$TARBALL_URL" -o "$archive"
+  tar -xzf "$archive" -C "$temp_dir"
+  extracted="$(find "$temp_dir" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+  if [ -z "$extracted" ]; then
+    echo "Tarball did not contain a source directory." >&2
+    exit 1
+  fi
+
+  if [ -e "$SOURCE_DIR" ]; then
+    mv "$SOURCE_DIR" "$SOURCE_DIR.backup.$(date +%Y%m%d%H%M%S)"
+  fi
+  install -d -m 0755 "$(dirname "$SOURCE_DIR")"
+  mv "$extracted" "$SOURCE_DIR"
+  rm -rf "$temp_dir"
+}
+
+prepare_downloaded_scripts() {
+  if [ ! -f "$SOURCE_DIR/scripts/tater-vps-setup.sh" ]; then
+    echo "Downloaded source is missing scripts/tater-vps-setup.sh." >&2
+    exit 1
+  fi
+  chmod +x "$SOURCE_DIR/scripts/"*.sh
+}
+
+bootstrap_source_if_needed() {
+  if [ "$NO_BOOTSTRAP" = "1" ] || [ "$IN_REPO_SOURCE" = "1" ]; then
+    return
+  fi
+
+  require_root_for_bootstrap
+  clear_screen
+  print_logo
+  stage "Preparing bootstrap tools"
+  require_bootstrap_packages
+
+  if [ -n "$TARBALL_URL" ]; then
+    stage "Downloading Tater Tunnel tarball"
+    download_from_tarball
+  else
+    stage "Downloading Tater Tunnel source"
+    download_from_git
+  fi
+
+  stage "Preparing setup scripts"
+  prepare_downloaded_scripts
+  printf '%sSource:%s %s\n' "$GREEN" "$RESET" "$SOURCE_DIR"
+
+  if [ "$NO_RUN" = "1" ]; then
+    printf '\n%sSource is ready. Re-run:%s sudo %s/scripts/tater-vps-setup.sh\n' "$GREEN" "$RESET" "$SOURCE_DIR"
+    exit 0
+  fi
+
+  stage "Launching downloaded setup menu"
+  if [ -r /dev/tty ]; then
+    exec "$SOURCE_DIR/scripts/tater-vps-setup.sh" --no-bootstrap < /dev/tty
+  fi
+  exec "$SOURCE_DIR/scripts/tater-vps-setup.sh" --no-bootstrap
+}
+
+prompt_value() {
+  local label="$1"
+  local default_value="${2:-}"
+  local required="${3:-no}"
+  local value
+
+  while true; do
+    if [ -n "$default_value" ]; then
+      printf '%s%s%s [%s]: ' "$BOLD" "$label" "$RESET" "$default_value" >&2
+    else
+      printf '%s%s%s: ' "$BOLD" "$label" "$RESET" >&2
+    fi
+
+    read -r value
+    value="${value:-$default_value}"
+    if [ "$required" != "yes" ] || [ -n "$value" ]; then
+      printf '%s' "$value"
+      return
+    fi
+    printf '%sThis value is required.%s\n' "$RED" "$RESET" >&2
+  done
+}
+
+confirm() {
+  local label="$1"
+  local default="${2:-yes}"
+  local hint="[Y/n]"
+  local reply
+
+  if [ "$default" = "no" ]; then
+    hint="[y/N]"
+  fi
+
+  while true; do
+    printf '%s%s%s %s: ' "$BOLD" "$label" "$RESET" "$hint" >&2
+    read -r reply
+    reply="${reply:-$default}"
+    case "${reply,,}" in
+      y|yes) return 0 ;;
+      n|no) return 1 ;;
+      *) printf '%sAnswer yes or no.%s\n' "$RED" "$RESET" >&2 ;;
+    esac
+  done
+}
+
+print_stage() {
+  local number="$1"
+  local total="$2"
+  local message="$3"
+  printf '\n%s[%s/%s]%s %s%s%s\n' "$CYAN" "$number" "$total" "$RESET" "$BOLD" "$message" "$RESET"
+}
+
+show_progress_handoff() {
+  local title="$1"
+  shift
+
+  clear_screen
+  print_logo
+  print_stage "1" "3" "Validated setup choices"
+  print_stage "2" "3" "Starting installer"
+  printf '%s%s%s\n' "$DIM" "$title" "$RESET"
+  print_stage "3" "3" "Installer output"
+  "$@"
+}
+
+service_value() {
+  local key="$1"
+  awk -F= -v key="$key" '$1 == key { print substr($0, index($0, "=") + 1); exit }' "$SERVICE_FILE" 2>/dev/null || true
+}
+
+service_arg() {
+  local line="$1"
+  local flag="$2"
+  local default_value="$3"
+
+  set -- $line
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "$flag" ]; then
+      shift
+      printf '%s' "${1:-$default_value}"
+      return
+    fi
+    shift
+  done
+
+  printf '%s' "$default_value"
+}
+
+render_menu() {
+  local selected="$1"
+  local index
+
+  clear_screen
+  print_logo
+  printf '\n%sUse Up/Down arrows, Enter to select, q to quit.%s\n\n' "$DIM" "$RESET"
+
+  for index in "${!MENU_ITEMS[@]}"; do
+    if [ "$index" -eq "$selected" ]; then
+      printf '  %s> %s%s\n' "$GREEN$BOLD" "${MENU_ITEMS[$index]}" "$RESET"
+      printf '    %s%s%s\n' "$DIM" "${MENU_HELP[$index]}" "$RESET"
+    else
+      printf '    %s\n' "${MENU_ITEMS[$index]}"
+    fi
+  done
+}
+
+interactive_menu() {
+  local selected=0
+  local key
+
+  while true; do
+    render_menu "$selected"
+    IFS= read -rsn1 key || exit 0
+    if [ "$key" = $'\x1b' ]; then
+      IFS= read -rsn2 -t 0.2 key || true
+      case "$key" in
+        "[A")
+          selected=$(( (selected + ${#MENU_ITEMS[@]} - 1) % ${#MENU_ITEMS[@]} ))
+          ;;
+        "[B")
+          selected=$(( (selected + 1) % ${#MENU_ITEMS[@]} ))
+          ;;
+      esac
+    elif [ -z "$key" ]; then
+      return "$selected"
+    elif [ "$key" = "q" ] || [ "$key" = "Q" ]; then
+      return 3
+    fi
+  done
+}
+
+numbered_menu() {
+  local choice
+  local index
+
+  clear_screen
+  print_logo
+  printf '\n'
+  for index in "${!MENU_ITEMS[@]}"; do
+    printf '  %s. %s\n' "$((index + 1))" "${MENU_ITEMS[$index]}"
+  done
+
+  while true; do
+    printf '\nSelect 1-%s: ' "${#MENU_ITEMS[@]}" >&2
+    if ! read -r choice; then
+      exit 1
+    fi
+    case "$choice" in
+      1|2|3|4|5)
+        return "$((choice - 1))"
+        ;;
+      *)
+        printf '%sChoose a listed number.%s\n' "$RED" "$RESET" >&2
+        ;;
+    esac
+  done
+}
+
+choose_menu() {
+  if [ -t 0 ]; then
+    interactive_menu
+  else
+    numbered_menu
+  fi
+}
+
+run_update_install() {
+  local exec_start
+  local working_dir
+  local listen_host
+  local listen_port
+  local state_file
+  local config_file
+  local install_dir
+  local state_dir
+  local config_dir
+  local wireguard_interface
+  local args
+  local wg_relay_access="0"
+
+  require_root_for_install
+  clear_screen
+  print_logo
+
+  if [ ! -f "$SERVICE_FILE" ]; then
+    cat <<EOF
+
+${RED}${BOLD}No existing Tater VPS service was found.${RESET}
+
+Expected:
+  $SERVICE_FILE
+
+Choose a fresh install path first, then use this update path later.
+EOF
+    pause
+    return 0
+  fi
+
+  exec_start="$(service_value "ExecStart")"
+  working_dir="$(service_value "WorkingDirectory")"
+  listen_host="$(service_arg "$exec_start" "--host" "127.0.0.1")"
+  listen_port="$(service_arg "$exec_start" "--port" "4174")"
+  state_file="$(service_arg "$exec_start" "--state-file" "/var/lib/tater-tunnel/vps-agent.json")"
+  config_file="$(service_arg "$exec_start" "--wireguard-config" "/etc/tater-tunnel/wireguard/tater0.conf")"
+  install_dir="${working_dir:-/opt/tater-tunnel}"
+  state_dir="$(dirname "$state_file")"
+  config_dir="$(dirname "$(dirname "$config_file")")"
+  wireguard_interface="$(basename "$config_file" .conf)"
+
+  if [ "$listen_host" = "0.0.0.0" ]; then
+    wg_relay_access="1"
+  fi
+
+  cat <<EOF
+
+${BOLD}Update existing install${RESET}
+This updates the app files and systemd unit while preserving:
+  - VPS pairing state in $state_dir
+  - WireGuard config in $config_dir
+  - Existing bind host/port from systemd
+
+Detected:
+  Install dir:  $install_dir
+  Agent:        http://$listen_host:$listen_port
+  WG relay:     $([ "$wg_relay_access" = "1" ] && printf 'enabled' || printf 'localhost/proxy only')
+
+EOF
+
+  args=(
+    "$SCRIPT_DIR/install-vps-agent.sh"
+    --listen-host "$listen_host"
+    --listen-port "$listen_port"
+    --install-dir "$install_dir"
+    --state-dir "$state_dir"
+    --config-dir "$config_dir"
+    --wireguard-interface "$wireguard_interface"
+  )
+
+  if [ "$wg_relay_access" = "1" ]; then
+    args+=(--wireguard-client-access)
+  fi
+  if ! confirm "Install/refresh OS packages during update" no; then
+    args+=(--skip-packages)
+  fi
+  if ! confirm "Restart service after update" yes; then
+    args+=(--no-start)
+  fi
+
+  if ! confirm "Start update now" yes; then
+    return 0
+  fi
+
+  show_progress_handoff "Update progress will appear below." "${args[@]}"
+}
+
+run_full_install() {
+  local domain
+  local email
+  local ssh_port
+  local listen_port
+  local pairing_code
+  local args
+
+  require_root_for_install
+  clear_screen
+  print_logo
+  cat <<EOF
+
+${BOLD}Blank VPS full install${RESET}
+This path installs Tater Tunnel, Caddy automatic HTTPS, WireGuard, and UFW.
+Caddy will route HTTPS traffic to the local Tater service on 127.0.0.1.
+
+EOF
+
+  domain="$(prompt_value "Domain pointed at this VPS" "" yes)"
+  email="$(prompt_value "ACME email (blank is ok)" "" no)"
+  ssh_port="$(prompt_value "SSH port to keep open" "22" yes)"
+  listen_port="$(prompt_value "Local Tater VPS Agent port" "4174" yes)"
+  pairing_code="$(prompt_value "Pairing code (blank to generate)" "" no)"
+
+  args=("$SCRIPT_DIR/install-vps-full.sh" --domain "$domain" --ssh-port "$ssh_port" --listen-port "$listen_port")
+  if [ -n "$email" ]; then
+    args+=(--email "$email")
+  fi
+  if [ -n "$pairing_code" ]; then
+    args+=(--pairing-code "$pairing_code")
+  fi
+  if ! confirm "Configure UFW firewall for 80/tcp, 443/tcp, 51888/udp, and SSH" yes; then
+    args+=(--no-firewall)
+  fi
+
+  clear_screen
+  print_logo
+  cat <<EOF
+
+${BOLD}Ready to install:${RESET}
+  Path:        Blank VPS full install
+  Domain:      $domain
+  HTTPS:       Caddy automatic certificates on 443/tcp
+  Agent:       http://127.0.0.1:$listen_port
+  WireGuard:   51888/udp
+  Firewall:    $([ "${args[*]}" = "${args[*]//--no-firewall/}" ] && printf 'enabled' || printf 'unchanged')
+
+EOF
+  if ! confirm "Start install now" yes; then
+    return 0
+  fi
+  show_progress_handoff "Package/service progress will appear below." "${args[@]}"
+}
+
+run_advanced_install() {
+  local listen_host
+  local listen_port
+  local pairing_code
+  local args
+  local wireguard_relay_access="0"
+
+  require_root_for_install
+  clear_screen
+  print_logo
+  cat <<EOF
+
+${BOLD}Advanced existing VPS install${RESET}
+This path installs only the Tater VPS Agent service.
+It will not install Caddy and will not change firewall rules.
+
+EOF
+
+  listen_host="$(prompt_value "Local listen host" "127.0.0.1" yes)"
+  listen_port="$(prompt_value "Local listen port" "4174" yes)"
+  pairing_code="$(prompt_value "Pairing code (blank to generate)" "" no)"
+
+  args=("$SCRIPT_DIR/install-vps-agent.sh" --listen-host "$listen_host" --listen-port "$listen_port")
+  if [ -n "$pairing_code" ]; then
+    args+=(--pairing-code "$pairing_code")
+  fi
+  if confirm "Allow WireGuard devices to reach /relay on 10.88.0.1:$listen_port" no; then
+    args+=(--wireguard-client-access)
+    wireguard_relay_access="1"
+  fi
+  if ! confirm "Install OS packages if missing" yes; then
+    args+=(--skip-packages)
+  fi
+  if ! confirm "Start/restart service after install" yes; then
+    args+=(--no-start)
+  fi
+
+  clear_screen
+  print_logo
+  cat <<EOF
+
+${BOLD}Ready to install:${RESET}
+  Path:        Advanced existing VPS install
+  Agent:       http://$listen_host:$listen_port
+  Caddy/HTTPS: unchanged
+  Firewall:    unchanged
+  WG relay:    $([ "$wireguard_relay_access" = "1" ] && printf 'agent listens for VPN clients' || printf 'not enabled')
+
+After install, point your reverse proxy at http://$listen_host:$listen_port
+and open 51888/udp for WireGuard devices.
+$([ "$wireguard_relay_access" = "1" ] && printf 'Also allow TCP %s only from the tater0 interface.\n' "$listen_port")
+
+EOF
+  if ! confirm "Start install now" yes; then
+    return 0
+  fi
+  show_progress_handoff "Agent install progress will appear below." "${args[@]}"
+}
+
+view_notes() {
+  clear_screen
+  print_logo
+  printf '\n'
+  if command -v less >/dev/null 2>&1 && [ -t 0 ]; then
+    less "$DOC_FILE"
+  else
+    cat "$DOC_FILE"
+  fi
+  pause
+}
+
+main() {
+  local selected
+
+  parse_args "$@"
+  bootstrap_source_if_needed
+
+  if [ "$NO_RUN" = "1" ]; then
+    printf '%sSetup menu is ready at:%s %s\n' "$GREEN" "$RESET" "$SCRIPT_DIR/tater-vps-setup.sh"
+    exit 0
+  fi
+
+  while true; do
+    set +e
+    choose_menu
+    selected="$?"
+    set -e
+    case "$selected" in
+      0)
+        run_update_install
+        exit 0
+        ;;
+      1)
+        run_full_install
+        exit 0
+        ;;
+      2)
+        run_advanced_install
+        exit 0
+        ;;
+      3) view_notes ;;
+      4)
+        clear_screen
+        print_logo
+        printf '\n%sNo changes made.%s\n' "$DIM" "$RESET"
+        exit 0
+        ;;
+    esac
+  done
+}
+
+main "$@"

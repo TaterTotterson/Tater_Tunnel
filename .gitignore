@@ -1,0 +1,13 @@
+.tater_tunnel/
+__pycache__/
+*.pyc
+.DS_Store
+.env
+.env.*
+*.log
+*.key
+*.pem
+.venv/
+venv/
+dist/
+build/
