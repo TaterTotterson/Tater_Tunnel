@@ -399,8 +399,7 @@ label span,
 
 .form-grid,
 .device-form,
-.route-form,
-.route-list {
+.route-form {
   display: grid;
   gap: 14px;
   padding: 18px;
