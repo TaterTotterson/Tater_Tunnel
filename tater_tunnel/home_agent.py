@@ -168,7 +168,7 @@ class HomeAgentService:
 
         now = utc_now()
         vps_health = self.vps_client.health(management_url)
-        wireguard = self.vps_client.wireguard(management_url)
+        wireguard = self.vps_client.wireguard(management_url, self._relay_token(state))
 
         state["lastCheck"] = now
         vps_agent = state.setdefault("vpsAgent", {})
@@ -414,6 +414,7 @@ class HomeAgentService:
                 "publicKey": device["wireguard"]["publicKey"],
                 "allowedIp": device["wireguard"]["allowedIp"],
             },
+            self._relay_token(state),
         )
 
     def _sync_remove_peer(self, state: dict[str, Any], device_id: str) -> None:
@@ -421,7 +422,10 @@ class HomeAgentService:
         if not management_url:
             return
 
-        self.vps_client.remove_peer(management_url, device_id)
+        self.vps_client.remove_peer(management_url, device_id, self._relay_token(state))
+
+    def _relay_token(self, state: dict[str, Any]) -> str:
+        return str(((state.get("homeAgent") or {}).get("relay") or {}).get("token") or "")
 
     def _vps_health_summary(self, payload: dict[str, Any] | None, checked_at: str) -> dict[str, Any]:
         payload = payload or {}
@@ -769,17 +773,17 @@ class VpsAgentClient:
     def health(self, base_url: str) -> dict[str, Any]:
         return self._request("GET", base_url, "/api/health", None)
 
-    def wireguard(self, base_url: str) -> dict[str, Any]:
-        return self._request("GET", base_url, "/api/wireguard", None)
+    def wireguard(self, base_url: str, token: str = "") -> dict[str, Any]:
+        return self._request("GET", base_url, "/api/wireguard", None, headers=management_headers(token))
 
     def claim(self, base_url: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", base_url, "/api/claim", payload)
 
-    def add_peer(self, base_url: str, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._request("POST", base_url, "/api/peers", payload)
+    def add_peer(self, base_url: str, payload: dict[str, Any], token: str = "") -> dict[str, Any]:
+        return self._request("POST", base_url, "/api/peers", payload, headers=management_headers(token))
 
-    def remove_peer(self, base_url: str, peer_id: str) -> dict[str, Any]:
-        return self._request("DELETE", base_url, f"/api/peers/{peer_id}", None)
+    def remove_peer(self, base_url: str, peer_id: str, token: str = "") -> dict[str, Any]:
+        return self._request("DELETE", base_url, f"/api/peers/{peer_id}", None, headers=management_headers(token))
 
     def poll_relay(self, base_url: str, token: str) -> dict[str, Any] | None:
         return self._request(
@@ -1005,6 +1009,10 @@ class HomeAgentHandler(BaseHTTPRequestHandler):
 
     def _send_error(self, status: HTTPStatus, message: str) -> None:
         self._send_json({"error": message}, status)
+
+
+def management_headers(token: str) -> dict[str, str]:
+    return {"X-Tater-Relay-Token": token} if token else {}
 
 
 def utc_now() -> str:

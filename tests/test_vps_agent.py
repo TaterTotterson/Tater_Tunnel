@@ -1,11 +1,15 @@
 import base64
+import json
 import tempfile
 import threading
+import urllib.error
+import urllib.request
 import unittest
 from pathlib import Path
 
 from tater_tunnel.vps_agent import (
     VpsAgentError,
+    VpsAgentServer,
     VpsAgentService,
     VpsConfigStore,
     is_websocket_upgrade,
@@ -61,6 +65,23 @@ class VpsAgentServiceTest(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
+    def start_http_server(self):
+        server = VpsAgentServer(("127.0.0.1", 0), self.service)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_port}"
+
+    def http_json(self, base_url, method, path, payload=None, token=""):
+        body = None if payload is None else json.dumps(payload).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["X-Tater-Relay-Token"] = token
+        request = urllib.request.Request(f"{base_url}{path}", data=body, method=method, headers=headers)
+        with urllib.request.urlopen(request, timeout=3) as response:
+            return json.loads(response.read().decode("utf-8"))
+
     def test_initial_state_has_pairing_code(self):
         state = self.service.state()
 
@@ -95,6 +116,41 @@ class VpsAgentServiceTest(unittest.TestCase):
         self.assertNotIn("privateKey", state["interface"]["wireguard"])
         self.assertEqual(state["runtime"]["backend"], "config")
         self.assertEqual(state["runtime"]["configPath"], str(self.config_file))
+
+    def test_http_management_endpoints_require_relay_token_after_claim(self):
+        claim = self.service.claim(
+            {
+                "pairingCode": "ABCD-1234",
+                "securityMode": "safe",
+                "homeAgent": {
+                    "id": "home-1",
+                    "transport": "relay",
+                },
+            },
+            remote_address="127.0.0.1",
+        )
+        base_url = self.start_http_server()
+        token = claim["relay"]["token"]
+
+        health = self.http_json(base_url, "GET", "/api/health")
+        self.assertEqual(health["status"], "ok")
+        self.assertTrue(health["claimed"])
+        self.assertNotIn("state", health)
+
+        for method, path, payload in (
+            ("GET", "/api/state", None),
+            ("GET", "/api/wireguard", None),
+            ("POST", "/api/peers", {"id": "device-1"}),
+            ("POST", "/api/reset", {}),
+            ("DELETE", "/api/peers/device-1", None),
+        ):
+            with self.subTest(method=method, path=path):
+                with self.assertRaises(urllib.error.HTTPError) as context:
+                    self.http_json(base_url, method, path, payload)
+                self.assertEqual(context.exception.code, 403)
+
+        state = self.http_json(base_url, "GET", "/api/state", token=token)
+        self.assertTrue(state["claimed"])
 
     def test_close_websocket_session_removes_it_from_broker(self):
         result = self.service.claim(

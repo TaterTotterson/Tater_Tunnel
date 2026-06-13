@@ -30,6 +30,9 @@ class FakeVpsClient:
         self.claims = []
         self.added_peers = []
         self.removed_peers = []
+        self.wireguard_tokens = []
+        self.add_peer_tokens = []
+        self.remove_peer_tokens = []
         self.missing_peer_ids = set()
         self.relay_requests = []
         self.relay_responses = []
@@ -48,7 +51,8 @@ class FakeVpsClient:
     def health(self, base_url):
         return self.health_payload
 
-    def wireguard(self, base_url):
+    def wireguard(self, base_url, token=""):
+        self.wireguard_tokens.append(token)
         return self.wireguard_payload
 
     def claim(self, base_url, payload):
@@ -66,12 +70,14 @@ class FakeVpsClient:
             },
         }
 
-    def add_peer(self, base_url, payload):
+    def add_peer(self, base_url, payload, token=""):
         self.added_peers.append((base_url, payload))
+        self.add_peer_tokens.append(token)
         return {"state": {"peers": [payload]}}
 
-    def remove_peer(self, base_url, peer_id):
+    def remove_peer(self, base_url, peer_id, token=""):
         self.removed_peers.append((base_url, peer_id))
+        self.remove_peer_tokens.append(token)
         if peer_id in self.missing_peer_ids:
             raise AgentError(HTTPStatus.NOT_FOUND, "VPS Agent: Peer not found")
         return {"state": {"peers": []}}
@@ -342,6 +348,7 @@ class HomeAgentServiceTest(unittest.TestCase):
         self.assertEqual(checked_device["wireguard"]["live"]["transferRxBytes"], 392)
         self.assertEqual(result["state"]["vpsAgent"]["health"]["peerCount"], 1)
         self.assertEqual(result["state"]["vpsAgent"]["wireguardRuntime"]["livePeers"][0]["publicKey"], "public-1")
+        self.assertEqual(vps_client.wireguard_tokens[-1], "relay-token")
 
     def test_http_vps_pairing_claims_vps_and_syncs_peers(self):
         vps_client = FakeVpsClient()
@@ -373,12 +380,14 @@ class HomeAgentServiceTest(unittest.TestCase):
 
         self.assertEqual(vps_client.added_peers[0][0], "http://127.0.0.1:4174")
         self.assertEqual(vps_client.added_peers[0][1]["id"], device["id"])
+        self.assertEqual(vps_client.add_peer_tokens[0], "relay-token")
         self.assertIn("PublicKey = vps-public", added["enrollment"]["wireguardConfig"])
         self.assertIn("Endpoint = 127.0.0.1:51888", added["enrollment"]["wireguardConfig"])
 
         service.revoke_device(device["id"])
 
         self.assertEqual(vps_client.removed_peers[0], ("http://127.0.0.1:4174", device["id"]))
+        self.assertEqual(vps_client.remove_peer_tokens[0], "relay-token")
 
     def test_home_relay_proxies_one_queued_request(self):
         vps_client = FakeVpsClient()

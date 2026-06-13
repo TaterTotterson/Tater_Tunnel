@@ -297,7 +297,6 @@ class VpsAgentService:
             "claimed": saved["claimed"],
             "pairingEnabled": saved["pairing"]["enabled"],
             "peerCount": len(saved["peers"]),
-            "state": self._public_state(saved),
         }
 
     def wireguard_diagnostics(self) -> dict[str, Any]:
@@ -532,6 +531,9 @@ class VpsAgentService:
     def close_websocket_relay(self, session_id: str) -> None:
         self.relay_broker.close_websocket_session(session_id)
 
+    def require_management_token(self, token: str) -> None:
+        self._require_relay_token(token)
+
     def _require_claimed(self, state: dict[str, Any]) -> None:
         if not state["claimed"]:
             raise VpsAgentError(HTTPStatus.CONFLICT, "VPS Agent is not claimed")
@@ -584,8 +586,10 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
             if path == "/api/health":
                 self._send_json(self.server.service.health())
             elif path == "/api/state":
+                self.server.service.require_management_token(self._management_token())
                 self._send_json(self.server.service.state())
             elif path == "/api/wireguard":
+                self.server.service.require_management_token(self._management_token())
                 self._send_json(self.server.service.wireguard_diagnostics())
             elif path == "/api/relay/next":
                 self._handle_relay_poll()
@@ -619,8 +623,10 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
             if path == "/api/claim":
                 self._send_json(self.server.service.claim(payload, self.client_address[0]))
             elif path == "/api/peers":
+                self.server.service.require_management_token(self._management_token())
                 self._send_json(self.server.service.add_peer(payload), HTTPStatus.CREATED)
             elif path == "/api/reset":
+                self.server.service.require_management_token(self._management_token())
                 self._send_json(self.server.service.reset())
             elif path.startswith("/api/relay/responses/"):
                 request_id = unquote(path.removeprefix("/api/relay/responses/"))
@@ -667,6 +673,7 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
 
         peer_id = unquote(path[len(prefix) :])
         try:
+            self.server.service.require_management_token(self._management_token())
             self._send_json(self.server.service.remove_peer(peer_id))
         except VpsAgentError as error:
             self._send_error(error.status, error.message)
@@ -690,6 +697,9 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
         if length == 0:
             return b""
         return self.rfile.read(length)
+
+    def _management_token(self) -> str:
+        return self.headers.get("X-Tater-Management-Token") or self.headers.get("X-Tater-Relay-Token", "")
 
     def _handle_relay_poll(self) -> None:
         try:
