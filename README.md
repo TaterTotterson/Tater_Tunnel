@@ -63,7 +63,7 @@ The generated config includes:
 
 Revoking a device rewrites the config without that device peer.
 
-The Home Agent does not run WireGuard in the default product path. It pairs as a relay client so macOS, Windows, Docker, and Linux users do not need to install WireGuard just to run Tater at home. WireGuard is used for remote device VPN mode: the phone or laptop gets a config/QR whose endpoint is the VPS public IP/domain.
+The Home Agent does not run WireGuard in the default product path. It pairs as a relay client so macOS, Windows, Docker, and Linux users do not need to install WireGuard just to reach approved home app routes. WireGuard is used for remote device VPN mode: the phone or laptop gets a config/QR whose endpoint is the VPS public IP/domain.
 
 If the `wg` command is available, key generation uses it. Otherwise the prototype uses mock-shaped key material so the control flow can be tested without changing network interfaces.
 
@@ -190,7 +190,7 @@ The first useful version should let a user:
 1. Install the VPS Agent.
 2. Pair it from the Home Agent.
 3. Add a phone or laptop with a QR code.
-4. Reach Tater services through the Home Agent relay path.
+4. Reach approved Tater and local app routes through the Home Agent relay path.
 5. Revoke a lost device.
 
 Remote devices can use WireGuard VPN mode by scanning the generated WireGuard config/QR. A future native Tater app can wrap that flow the same way UniFi wraps WireGuard with Teleport/WiFiman.

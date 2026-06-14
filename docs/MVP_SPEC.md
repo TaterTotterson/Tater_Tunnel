@@ -16,7 +16,7 @@ Secure remote access to Tater without port forwarding, public dashboards, cloud 
 8. User adds a phone, laptop, or tablet.
 9. Home Agent creates a WireGuard device enrollment for VPN mode.
 10. User scans a QR code in the WireGuard app.
-11. Device can reach approved Tater services remotely.
+11. Device can reach approved Tater and local app routes remotely.
 12. User can revoke the device from Home Agent.
 
 ## Components
@@ -40,7 +40,7 @@ Non-responsibilities:
 - No browser dashboard.
 - No service-level approval decisions.
 - No user or permission management.
-- No public access to Tater services.
+- No public access to Tater services or approved local app routes.
 
 ### Tater Home Agent
 
@@ -54,7 +54,7 @@ MVP responsibilities:
 - Register Tater device identities.
 - Add and revoke devices.
 - Show tunnel health.
-- Gate Tater service access by approved device identity.
+- Gate Tater service access and approved local app routes by approved device identity.
 
 ## MVP Screens
 
@@ -157,6 +157,6 @@ Enrollment modes:
 
 ### Milestone 5: Tater Service Gate
 
-- Approved device identity required for Tater services.
-- Revoked devices lose both WireGuard peer access and Tater access.
+- Approved device identity required for Tater services and exposed app routes.
+- Revoked devices lose both WireGuard peer access and Tater/app-route access.
 - Audit log records pairing, enrollment, and revocation.
