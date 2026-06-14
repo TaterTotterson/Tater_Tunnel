@@ -162,6 +162,15 @@
             </div>
             <form id="routeForm" class="route-form" hidden>
               <label>
+                <span>Preset</span>
+                <select id="routePreset" name="routePreset">
+                  <option value="">Custom</option>
+                  <option value="tater">Tater App</option>
+                  <option value="matrix">Matrix</option>
+                  <option value="emby">Emby</option>
+                </select>
+              </label>
+              <label>
                 <span>Name</span>
                 <input id="routeName" name="routeName" placeholder="tater" autocomplete="off">
               </label>
@@ -207,6 +216,6 @@
       </main>
     </div>
 
-    <script src="app.js?v=23"></script>
+    <script src="app.js?v=24"></script>
   </body>
 </html>

@@ -2,6 +2,35 @@ const STORAGE_KEY = "tater-tunnel-prototype";
 const HEALTH_REFRESH_MS = 10000;
 const LIVE_SNAPSHOT_STALE_MS = 120000;
 const RELAY_RUNTIME_STALE_MS = 45000;
+const ROUTE_PRESETS = {
+  tater: {
+    name: "tater",
+    host: "127.0.0.1",
+    port: "8501",
+    path: "/",
+    websocket: true,
+    rootPathPrefixes: ["/api", "/static", "/v1"],
+    timeoutSeconds: ""
+  },
+  matrix: {
+    name: "matrix",
+    host: "127.0.0.1",
+    port: "8008",
+    path: "/",
+    websocket: true,
+    rootPathPrefixes: ["/_matrix", "/_synapse", "/.well-known"],
+    timeoutSeconds: "65"
+  },
+  emby: {
+    name: "emby",
+    host: "127.0.0.1",
+    port: "8096",
+    path: "/",
+    websocket: true,
+    rootPathPrefixes: [],
+    timeoutSeconds: ""
+  }
+};
 
 const defaultState = {
   paired: false,
@@ -56,6 +85,7 @@ const healthButton = document.querySelector("#healthButton");
 const resetButton = document.querySelector("#resetButton");
 const addRouteButton = document.querySelector("#addRouteButton");
 const routeForm = document.querySelector("#routeForm");
+const routePreset = document.querySelector("#routePreset");
 const routeName = document.querySelector("#routeName");
 const routeHost = document.querySelector("#routeHost");
 const routePort = document.querySelector("#routePort");
@@ -183,6 +213,9 @@ resetButton.addEventListener("click", async () => {
 });
 
 addRouteButton.addEventListener("click", showRouteForm);
+routePreset.addEventListener("change", () => {
+  applyRoutePreset(routePreset.value);
+});
 
 routeForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -200,6 +233,11 @@ routeForm.addEventListener("submit", async (event) => {
   const hostHeader = routeHostHeader.value.trim();
   const rootPathPrefixes = parseRootPathPrefixes(routeRootPaths.value);
   const timeoutSeconds = parseRouteTimeout(routeTimeout.value);
+
+  if (timeoutSeconds === null) {
+    setAttention("Route timeout must be a number of seconds");
+    return;
+  }
 
   if (!name || !port) {
     setAttention("Route name and port required");
@@ -237,6 +275,7 @@ routeForm.addEventListener("submit", async (event) => {
     }
 
     routeForm.reset();
+    routePreset.value = "";
     routeHost.value = "127.0.0.1";
     routePath.value = "/";
     routeWebsocket.checked = true;
@@ -281,6 +320,22 @@ function showRouteForm() {
     routePath.value = "/";
   }
   routeName.focus();
+}
+
+function applyRoutePreset(presetName) {
+  const preset = ROUTE_PRESETS[presetName];
+  if (!preset) {
+    return;
+  }
+
+  routeName.value = preset.name;
+  routeHost.value = preset.host;
+  routePort.value = preset.port;
+  routePath.value = preset.path;
+  routeWebsocket.checked = preset.websocket !== false;
+  routeHostHeader.value = preset.hostHeader || "";
+  routeRootPaths.value = (preset.rootPathPrefixes || []).join(", ");
+  routeTimeout.value = preset.timeoutSeconds ? String(preset.timeoutSeconds) : "";
 }
 
 async function revokeDevice(id) {
@@ -860,8 +915,7 @@ function parseRouteTimeout(value) {
     return 0;
   }
 
-  const timeout = Number.parseInt(cleaned, 10);
-  return Number.isFinite(timeout) ? timeout : 0;
+  return /^\d+$/.test(cleaned) ? Number.parseInt(cleaned, 10) : null;
 }
 
 function routeRelayPath(name) {
