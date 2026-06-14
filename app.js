@@ -29,6 +29,24 @@ const ROUTE_PRESETS = {
     websocket: true,
     rootPathPrefixes: [],
     timeoutSeconds: ""
+  },
+  screenShare: {
+    name: "screen-share",
+    host: "127.0.0.1",
+    port: "6080",
+    path: "/",
+    websocket: true,
+    rootPathPrefixes: ["/websockify", "/app", "/core", "/vendor"],
+    timeoutSeconds: ""
+  },
+  remoteDesktop: {
+    name: "remote-desktop",
+    host: "127.0.0.1",
+    port: "6901",
+    path: "/",
+    websocket: true,
+    rootPathPrefixes: ["/websockify"],
+    timeoutSeconds: ""
   }
 };
 
