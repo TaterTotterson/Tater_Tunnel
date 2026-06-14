@@ -62,6 +62,7 @@ const routePort = document.querySelector("#routePort");
 const routePath = document.querySelector("#routePath");
 const routeWebsocket = document.querySelector("#routeWebsocket");
 const routeHostHeader = document.querySelector("#routeHostHeader");
+const routeRootPaths = document.querySelector("#routeRootPaths");
 const relayRouteList = document.querySelector("#relayRouteList");
 
 pairingForm.addEventListener("submit", async (event) => {
@@ -196,6 +197,7 @@ routeForm.addEventListener("submit", async (event) => {
   const path = routePath.value.trim();
   const websocket = routeWebsocket.checked;
   const hostHeader = routeHostHeader.value.trim();
+  const rootPathPrefixes = parseRootPathPrefixes(routeRootPaths.value);
 
   if (!name || !port) {
     setAttention("Route name and port required");
@@ -203,10 +205,14 @@ routeForm.addEventListener("submit", async (event) => {
   }
 
   await withBusy(routeForm, async () => {
+    const routePayload = { name, host, port, path, websocket, hostHeader };
+    if (rootPathPrefixes.length) {
+      routePayload.rootPathPrefixes = rootPathPrefixes;
+    }
     if (apiAvailable) {
       const result = await requestApi("/api/relay-routes", {
         method: "POST",
-        body: { name, host, port, path, websocket, hostHeader }
+        body: routePayload
       });
       applyState(result.state);
     } else {
@@ -214,7 +220,7 @@ routeForm.addEventListener("submit", async (event) => {
       const nextRoutes = { ...getRelayRoutes(), [name]: `http://${host}:${port}${routeSuffix}` };
       const nextSettings = {
         ...getRelayRouteSettings(),
-        [name]: { websocket, ...(hostHeader ? { hostHeader } : {}) }
+        [name]: { websocket, ...(hostHeader ? { hostHeader } : {}), ...(rootPathPrefixes.length ? { rootPathPrefixes } : {}) }
       };
       applyState(withRelayRoutes(state, nextRoutes, nextSettings));
       saveLocalState();
@@ -224,6 +230,7 @@ routeForm.addEventListener("submit", async (event) => {
     routeHost.value = "127.0.0.1";
     routePath.value = "/";
     routeWebsocket.checked = true;
+    routeRootPaths.value = "";
     routeForm.hidden = true;
   });
 });
@@ -518,6 +525,9 @@ function renderRelayRoutes() {
     options.push(routeSettings.websocket === false ? "WebSockets off" : "WebSockets on");
     if (routeSettings.hostHeader) {
       options.push(`Host header: ${routeSettings.hostHeader}`);
+    }
+    if (routeSettings.rootPathPrefixes?.length) {
+      options.push(`Root paths: ${routeSettings.rootPathPrefixes.join(", ")}`);
     }
     card.querySelector(".route-options").textContent = options.join(" · ");
     const healthLine = card.querySelector(".route-health");
@@ -818,6 +828,16 @@ function normalizeRoutePath(path) {
 
   const normalized = value.startsWith("/") ? value : `/${value}`;
   return normalized.replace(/\/+$/, "");
+}
+
+function parseRootPathPrefixes(value) {
+  return [...new Set(String(value || "")
+    .split(/[,\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => item.startsWith("/") ? item : `/${item}`)
+    .map((item) => item.replace(/\/+$/, ""))
+    .filter((item) => item && item !== "/"))];
 }
 
 function routeRelayPath(name) {

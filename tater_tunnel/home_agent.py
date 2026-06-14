@@ -46,6 +46,9 @@ VALID_DEVICE_TYPES = {"Phone", "Laptop", "Tablet", "Desktop"}
 RELAY_POLL_INTERVAL_SECONDS = 1.0
 RELAY_PROXY_TIMEOUT_SECONDS = 15
 DEFAULT_RELAY_WORKERS = 6
+DEFAULT_ROUTE_ROOT_PATH_PREFIXES = {
+    "tater": ("/api", "/static", "/v1"),
+}
 HOP_BY_HOP_HEADERS = {
     "connection",
     "content-length",
@@ -506,11 +509,11 @@ class HomeAgentService:
         if method == "WEBSOCKET":
             return self._proxy_websocket_relay_request(relay_request)
 
+        relay_headers = relay_request.get("headers") or {}
         path = str(relay_request.get("path") or "/")
-        target_base, target_path, route_name = self._resolve_relay_target(path)
+        target_base, target_path, route_name = self._resolve_relay_target(path, relay_headers)
         target_url = f"{target_base}/{target_path.lstrip('/')}"
         request_body = base64.b64decode(str(relay_request.get("bodyBase64") or "").encode("ascii"))
-        relay_headers = relay_request.get("headers") or {}
         request_headers = sanitize_headers(relay_headers)
         request_headers["Accept-Encoding"] = "identity"
 
@@ -557,8 +560,9 @@ class HomeAgentService:
         management_url = relay.get("managementUrl") or (state.get("vpsAgent") or {}).get("managementUrl")
         relay_token = str(relay.get("token") or "")
         session_id = str(relay_request.get("sessionId") or relay_request.get("id") or "")
+        relay_headers = relay_request.get("headers") or {}
         path = str(relay_request.get("path") or "/")
-        target_base, target_path, route_name = self._resolve_relay_target(path)
+        target_base, target_path, route_name = self._resolve_relay_target(path, relay_headers)
         route_settings = self._current_relay_route_settings(state).get(route_name, {})
         rewrite_base_path = "/relay/" if route_name == "tunnel" else f"/relay/{route_name}/"
 
@@ -568,7 +572,6 @@ class HomeAgentService:
             return relay_error_response("Home Relay WebSocket session is not ready", rewrite_base_path, target_base)
 
         target_url = websocket_url_for(f"{target_base}/{target_path.lstrip('/')}")
-        relay_headers = relay_request.get("headers") or {}
         try:
             local_socket, response_headers = open_local_websocket(
                 target_url,
@@ -728,7 +731,7 @@ class HomeAgentService:
     def _with_state(self, state: dict[str, Any]) -> dict[str, Any]:
         return {"state": self._public_state(state)}
 
-    def _resolve_relay_target(self, path: str) -> tuple[str, str, str]:
+    def _resolve_relay_target(self, path: str, headers: dict[str, Any] | None = None) -> tuple[str, str, str]:
         raw_path = f"/{str(path or '/').lstrip('/')}"
         parsed = urlparse(raw_path)
         path_parts = parsed.path.lstrip("/").split("/", 1)
@@ -740,6 +743,15 @@ class HomeAgentService:
             if parsed.query:
                 routed_path = f"{routed_path}?{parsed.query}"
             return routes[route_name], routed_path, route_name
+
+        inferred_route = relay_route_from_referer(headers or {}, routes)
+        if inferred_route:
+            route_settings = self._current_relay_route_settings().get(inferred_route, {})
+            if route_path_matches_root_prefix(parsed.path, route_settings.get("rootPathPrefixes") or []):
+                routed_path = parsed.path or "/"
+                if parsed.query:
+                    routed_path = f"{routed_path}?{parsed.query}"
+                return routes[inferred_route], routed_path, inferred_route
 
         return self.relay_target, raw_path, "tunnel"
 
@@ -753,13 +765,20 @@ class HomeAgentService:
         if state is None:
             state = self.store.load()
         persisted = ((state.get("homeAgent") or {}).get("relay") or {}).get("routeSettings") or {}
-        if not isinstance(persisted, dict):
-            return {}
-        return {
-            normalize_route_name(name): normalize_route_settings(settings)
-            for name, settings in persisted.items()
-            if str(name).strip() and isinstance(settings, dict)
+        routes = self._current_relay_routes(state)
+        normalized = {
+            name: settings
+            for name in routes
+            if (settings := normalize_route_settings({}, name))
         }
+        if not isinstance(persisted, dict):
+            return normalized
+        for name, settings in persisted.items():
+            if not str(name).strip() or not isinstance(settings, dict):
+                continue
+            route_name = normalize_route_name(name)
+            normalized[route_name] = normalize_route_settings(settings, route_name)
+        return normalized
 
     def _serialize_keypair(self, keypair: KeyPair) -> dict[str, str]:
         return {
@@ -1226,15 +1245,17 @@ def route_from_payload(payload: dict[str, Any]) -> tuple[str, str]:
 
 
 def route_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    return normalize_route_settings(
-        {
-            "websocket": payload.get("websocket", payload.get("webSockets", True)),
-            "hostHeader": payload.get("hostHeader") or payload.get("forceHostHeader") or "",
-        }
-    )
+    name = normalize_route_name(str(payload.get("name") or ""))
+    settings = {
+        "websocket": payload.get("websocket", payload.get("webSockets", True)),
+        "hostHeader": payload.get("hostHeader") or payload.get("forceHostHeader") or "",
+    }
+    if "rootPathPrefixes" in payload or "rootPaths" in payload:
+        settings["rootPathPrefixes"] = payload.get("rootPathPrefixes", payload.get("rootPaths"))
+    return normalize_route_settings(settings, name)
 
 
-def normalize_route_settings(settings: dict[str, Any]) -> dict[str, Any]:
+def normalize_route_settings(settings: dict[str, Any], route_name: str = "") -> dict[str, Any]:
     normalized: dict[str, Any] = {}
     if settings.get("websocket") is not None:
         normalized["websocket"] = bool_setting(settings.get("websocket"))
@@ -1245,7 +1266,66 @@ def normalize_route_settings(settings: dict[str, Any]) -> dict[str, Any]:
             raise AgentError(HTTPStatus.BAD_REQUEST, "Route host header is invalid")
         normalized["hostHeader"] = host_header
 
+    if "rootPathPrefixes" in settings or "rootPaths" in settings:
+        normalized["rootPathPrefixes"] = normalize_root_path_prefixes(
+            settings.get("rootPathPrefixes", settings.get("rootPaths"))
+        )
+    elif route_name:
+        defaults = DEFAULT_ROUTE_ROOT_PATH_PREFIXES.get(route_name)
+        if defaults:
+            normalized["rootPathPrefixes"] = list(defaults)
+
     return normalized
+
+
+def normalize_root_path_prefixes(value: Any) -> list[str]:
+    if value is None:
+        return []
+
+    if isinstance(value, str):
+        raw_prefixes = re.split(r"[\s,]+", value.strip())
+    elif isinstance(value, (list, tuple, set)):
+        raw_prefixes = [str(item or "").strip() for item in value]
+    else:
+        raise AgentError(HTTPStatus.BAD_REQUEST, "Root paths must be a comma-separated list")
+
+    normalized: list[str] = []
+    for raw_prefix in raw_prefixes:
+        if not raw_prefix:
+            continue
+        prefix = raw_prefix if raw_prefix.startswith("/") else f"/{raw_prefix}"
+        parsed = urlparse(prefix)
+        if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
+            raise AgentError(HTTPStatus.BAD_REQUEST, "Root paths must be local paths like /static")
+        path = "/" + parsed.path.strip("/")
+        if path == "/":
+            raise AgentError(HTTPStatus.BAD_REQUEST, "Root path / cannot be claimed by a route")
+        if path not in normalized:
+            normalized.append(path)
+    return normalized
+
+
+def route_path_matches_root_prefix(path: str, prefixes: list[str]) -> bool:
+    normalized_path = f"/{str(path or '/').lstrip('/')}"
+    for prefix in prefixes:
+        normalized_prefix = f"/{str(prefix or '').strip('/')}"
+        if normalized_prefix == "/":
+            continue
+        if normalized_path == normalized_prefix or normalized_path.startswith(f"{normalized_prefix}/"):
+            return True
+    return False
+
+
+def relay_route_from_referer(headers: dict[str, Any], routes: dict[str, str]) -> str:
+    referer = header_value(headers, "Referer") or header_value(headers, "Referrer")
+    if not referer:
+        return ""
+
+    parsed = urlparse(referer)
+    parts = parsed.path.strip("/").split("/")
+    if len(parts) >= 2 and parts[0] == "relay" and parts[1] in routes:
+        return parts[1]
+    return ""
 
 
 def bool_setting(value: Any) -> bool:
