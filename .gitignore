@@ -1,5 +1,6 @@
 .tater_tunnel/
 __pycache__/
+tests/
 *.pyc
 .DS_Store
 .env
