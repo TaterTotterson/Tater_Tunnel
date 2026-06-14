@@ -23,6 +23,69 @@ http://127.0.0.1:4173/
 
 State is stored at `.tater_tunnel/home-agent.json`.
 
+## Run With Docker
+
+Build the image locally:
+
+```bash
+docker build -t tater-tunnel:local .
+```
+
+Run the Home Agent UI/API:
+
+```bash
+docker run --rm \
+  -p 4173:4173 \
+  -v tater-tunnel-home-data:/data \
+  -v tater-tunnel-home-config:/config \
+  tater-tunnel:local home
+```
+
+Then open:
+
+```text
+http://127.0.0.1:4173/
+```
+
+Run the VPS Agent in safe config-rendering mode:
+
+```bash
+docker run --rm \
+  -p 4174:4174 \
+  -p 51888:51888/udp \
+  -v tater-tunnel-vps-data:/data \
+  -v tater-tunnel-vps-config:/config \
+  -e TATER_TUNNEL_PAIRING_CODE=ABCD-1234 \
+  tater-tunnel:local vps
+```
+
+For a live VPS container that should manage the WireGuard interface, run it on a
+Linux host with network administration access:
+
+```bash
+docker run --rm \
+  --cap-add NET_ADMIN \
+  --device /dev/net/tun \
+  --network host \
+  -v tater-tunnel-vps-data:/data \
+  -v tater-tunnel-vps-config:/config \
+  -e TATER_TUNNEL_PAIRING_CODE=ABCD-1234 \
+  -e TATER_TUNNEL_WIREGUARD_BACKEND=system \
+  tater-tunnel:local vps
+```
+
+Tagged releases publish a multi-architecture image to:
+
+```text
+ghcr.io/tatertotterson/tater-tunnel
+```
+
+Example release image:
+
+```bash
+docker run --rm -p 4173:4173 ghcr.io/tatertotterson/tater-tunnel:latest home
+```
+
 ## Run The Two-Agent Prototype
 
 Start the VPS Agent in one terminal:
