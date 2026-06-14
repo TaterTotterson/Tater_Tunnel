@@ -45,9 +45,14 @@ VALID_MODES = {"minimal", "safe", "lockdown"}
 VALID_DEVICE_TYPES = {"Phone", "Laptop", "Tablet", "Desktop"}
 RELAY_POLL_INTERVAL_SECONDS = 1.0
 RELAY_PROXY_TIMEOUT_SECONDS = 15
+MAX_ROUTE_TIMEOUT_SECONDS = 70
 DEFAULT_RELAY_WORKERS = 6
 DEFAULT_ROUTE_ROOT_PATH_PREFIXES = {
+    "matrix": ("/_matrix", "/_synapse", "/.well-known"),
     "tater": ("/api", "/static", "/v1"),
+}
+DEFAULT_ROUTE_TIMEOUT_SECONDS = {
+    "matrix": 65,
 }
 HOP_BY_HOP_HEADERS = {
     "connection",
@@ -524,9 +529,10 @@ class HomeAgentService:
         if route_settings.get("hostHeader"):
             request_headers["Host"] = str(route_settings["hostHeader"])
         request = urllib.request.Request(target_url, data=data, method=method, headers=request_headers)
+        timeout_seconds = route_timeout_seconds(route_settings)
 
         try:
-            with urllib.request.build_opener(NoRedirectHandler).open(request, timeout=RELAY_PROXY_TIMEOUT_SECONDS) as response:
+            with urllib.request.build_opener(NoRedirectHandler).open(request, timeout=timeout_seconds) as response:
                 body = response.read()
                 return {
                     "status": response.status,
@@ -578,6 +584,7 @@ class HomeAgentService:
                 relay_headers,
                 proxy_forwarding_headers(relay_headers, rewrite_base_path, path),
                 str(route_settings.get("hostHeader") or ""),
+                route_timeout_seconds(route_settings),
             )
         except Exception as error:
             return relay_error_response(f"Local WebSocket is not reachable: {error}", rewrite_base_path, target_base)
@@ -1099,13 +1106,14 @@ def open_local_websocket(
     relay_headers: dict[str, Any],
     forwarded_headers: dict[str, str],
     host_header: str = "",
+    timeout_seconds: int = RELAY_PROXY_TIMEOUT_SECONDS,
 ) -> tuple[socket.socket, dict[str, str]]:
     parsed = urlparse(target_url)
     if parsed.scheme not in {"ws", "wss"} or not parsed.hostname:
         raise OSError("invalid WebSocket target")
 
     port = parsed.port or (443 if parsed.scheme == "wss" else 80)
-    raw_socket = socket.create_connection((parsed.hostname, port), timeout=RELAY_PROXY_TIMEOUT_SECONDS)
+    raw_socket = socket.create_connection((parsed.hostname, port), timeout=timeout_seconds)
     local_socket: socket.socket
     if parsed.scheme == "wss":
         local_socket = ssl.create_default_context().wrap_socket(raw_socket, server_hostname=parsed.hostname)
@@ -1252,6 +1260,11 @@ def route_settings_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
     if "rootPathPrefixes" in payload or "rootPaths" in payload:
         settings["rootPathPrefixes"] = payload.get("rootPathPrefixes", payload.get("rootPaths"))
+    if "timeoutSeconds" in payload or "requestTimeoutSeconds" in payload or "timeout" in payload:
+        settings["timeoutSeconds"] = payload.get(
+            "timeoutSeconds",
+            payload.get("requestTimeoutSeconds", payload.get("timeout")),
+        )
     return normalize_route_settings(settings, name)
 
 
@@ -1275,7 +1288,37 @@ def normalize_route_settings(settings: dict[str, Any], route_name: str = "") -> 
         if defaults:
             normalized["rootPathPrefixes"] = list(defaults)
 
+    if "timeoutSeconds" in settings or "requestTimeoutSeconds" in settings or "timeout" in settings:
+        normalized["timeoutSeconds"] = normalize_route_timeout_seconds(
+            settings.get("timeoutSeconds", settings.get("requestTimeoutSeconds", settings.get("timeout")))
+        )
+    elif route_name in DEFAULT_ROUTE_TIMEOUT_SECONDS:
+        normalized["timeoutSeconds"] = DEFAULT_ROUTE_TIMEOUT_SECONDS[route_name]
+
     return normalized
+
+
+def normalize_route_timeout_seconds(value: Any) -> int:
+    try:
+        timeout = int(str(value).strip())
+    except (TypeError, ValueError) as error:
+        raise AgentError(HTTPStatus.BAD_REQUEST, "Route timeout must be a number of seconds") from error
+
+    if timeout < 1 or timeout > MAX_ROUTE_TIMEOUT_SECONDS:
+        raise AgentError(
+            HTTPStatus.BAD_REQUEST,
+            f"Route timeout must be between 1 and {MAX_ROUTE_TIMEOUT_SECONDS} seconds",
+        )
+    return timeout
+
+
+def route_timeout_seconds(settings: dict[str, Any] | None = None) -> int:
+    if not settings:
+        return RELAY_PROXY_TIMEOUT_SECONDS
+    try:
+        return normalize_route_timeout_seconds(settings.get("timeoutSeconds") or RELAY_PROXY_TIMEOUT_SECONDS)
+    except AgentError:
+        return RELAY_PROXY_TIMEOUT_SECONDS
 
 
 def normalize_root_path_prefixes(value: Any) -> list[str]:
@@ -1379,7 +1422,7 @@ def request_route_target(target_url: str, method: str, settings: dict[str, Any] 
         method=method,
         headers=headers,
     )
-    with urllib.request.build_opener(NoRedirectHandler).open(request, timeout=5) as response:
+    with urllib.request.build_opener(NoRedirectHandler).open(request, timeout=route_timeout_seconds(route_settings)) as response:
         return int(response.status), response.reason or HTTPStatus(response.status).phrase
 
 

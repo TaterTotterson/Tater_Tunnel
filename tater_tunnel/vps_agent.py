@@ -37,7 +37,7 @@ STATE_PATH = PROJECT_ROOT / ".tater_tunnel" / "vps-agent.json"
 WIREGUARD_CONFIG_PATH = PROJECT_ROOT / ".tater_tunnel" / "wireguard" / "tater0.conf"
 VALID_MODES = {"minimal", "safe", "lockdown"}
 RELAY_POLL_TIMEOUT_SECONDS = 20
-RELAY_REQUEST_TIMEOUT_SECONDS = 30
+RELAY_REQUEST_TIMEOUT_SECONDS = 75
 RELAY_MAX_BODY_BYTES = 2 * 1024 * 1024
 HOP_BY_HOP_HEADERS = {
     "connection",
