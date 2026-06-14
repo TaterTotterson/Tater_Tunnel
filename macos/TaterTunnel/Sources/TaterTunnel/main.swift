@@ -593,6 +593,185 @@ private struct PreparedUpdate {
     let workDirectory: URL
 }
 
+private struct TrafficRates {
+    let downloadBitsPerSecond: Double
+    let uploadBitsPerSecond: Double
+    let connectedDevices: Int
+
+    var menuBarTitle: String {
+        "↓ \(Self.compactRate(downloadBitsPerSecond))  ↑ \(Self.compactRate(uploadBitsPerSecond))"
+    }
+
+    var menuTitle: String {
+        "Traffic: ↓ \(Self.fullRate(downloadBitsPerSecond))  ↑ \(Self.fullRate(uploadBitsPerSecond))"
+    }
+
+    var tooltip: String {
+        "Download \(Self.fullRate(downloadBitsPerSecond)), upload \(Self.fullRate(uploadBitsPerSecond)) through \(connectedDevices) connected VPN device\(connectedDevices == 1 ? "" : "s")."
+    }
+
+    private static func compactRate(_ bitsPerSecond: Double) -> String {
+        if bitsPerSecond >= 1_000_000_000 {
+            return String(format: "%.1f Gb/s", bitsPerSecond / 1_000_000_000)
+        }
+        if bitsPerSecond >= 1_000_000 {
+            return String(format: "%.1f Mb/s", bitsPerSecond / 1_000_000)
+        }
+        if bitsPerSecond >= 1_000 {
+            return String(format: "%.0f Kb/s", bitsPerSecond / 1_000)
+        }
+        return "0 Kb/s"
+    }
+
+    private static func fullRate(_ bitsPerSecond: Double) -> String {
+        if bitsPerSecond >= 1_000_000_000 {
+            return String(format: "%.2f Gb/s", bitsPerSecond / 1_000_000_000)
+        }
+        if bitsPerSecond >= 1_000_000 {
+            return String(format: "%.2f Mb/s", bitsPerSecond / 1_000_000)
+        }
+        if bitsPerSecond >= 1_000 {
+            return String(format: "%.1f Kb/s", bitsPerSecond / 1_000)
+        }
+        return "0 Kb/s"
+    }
+}
+
+private struct TrafficSnapshot {
+    let date: Date
+    let uploadBytes: UInt64
+    let downloadBytes: UInt64
+    let connectedDevices: Int
+}
+
+private final class TrafficMonitor {
+    var onUpdate: ((TrafficRates) -> Void)?
+
+    private let stateURL: URL
+    private var previousSnapshot: TrafficSnapshot?
+    private var timer: Timer?
+    private var requestInFlight = false
+
+    init(webURL: URL) {
+        stateURL = URL(string: "\(webURL.absoluteString)/api/state")!
+    }
+
+    func start() {
+        stop()
+        poll()
+        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            self?.poll()
+        }
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        requestInFlight = false
+    }
+
+    private func poll() {
+        guard !requestInFlight else {
+            return
+        }
+
+        requestInFlight = true
+        var request = URLRequest(url: stateURL)
+        request.timeoutInterval = 1.5
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+
+        URLSession.shared.dataTask(with: request) { [weak self] data, _, _ in
+            guard let self else { return }
+            defer {
+                self.requestInFlight = false
+            }
+
+            guard
+                let data,
+                let snapshot = self.parseSnapshot(data)
+            else {
+                return
+            }
+
+            let rates = self.rates(from: snapshot)
+            self.previousSnapshot = snapshot
+            DispatchQueue.main.async { [onUpdate] in
+                onUpdate?(rates)
+            }
+        }.resume()
+    }
+
+    private func rates(from snapshot: TrafficSnapshot) -> TrafficRates {
+        guard let previousSnapshot else {
+            return TrafficRates(downloadBitsPerSecond: 0, uploadBitsPerSecond: 0, connectedDevices: snapshot.connectedDevices)
+        }
+
+        let elapsed = snapshot.date.timeIntervalSince(previousSnapshot.date)
+        guard elapsed > 0 else {
+            return TrafficRates(downloadBitsPerSecond: 0, uploadBitsPerSecond: 0, connectedDevices: snapshot.connectedDevices)
+        }
+
+        let uploadDelta = snapshot.uploadBytes >= previousSnapshot.uploadBytes
+            ? snapshot.uploadBytes - previousSnapshot.uploadBytes
+            : 0
+        let downloadDelta = snapshot.downloadBytes >= previousSnapshot.downloadBytes
+            ? snapshot.downloadBytes - previousSnapshot.downloadBytes
+            : 0
+
+        return TrafficRates(
+            downloadBitsPerSecond: Double(downloadDelta) * 8 / elapsed,
+            uploadBitsPerSecond: Double(uploadDelta) * 8 / elapsed,
+            connectedDevices: snapshot.connectedDevices
+        )
+    }
+
+    private func parseSnapshot(_ data: Data) -> TrafficSnapshot? {
+        guard
+            let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let devices = payload["devices"] as? [[String: Any]]
+        else {
+            return nil
+        }
+
+        var uploadBytes: UInt64 = 0
+        var downloadBytes: UInt64 = 0
+        var connectedDevices = 0
+
+        for device in devices {
+            guard
+                let wireguard = device["wireguard"] as? [String: Any],
+                let live = wireguard["live"] as? [String: Any]
+            else {
+                continue
+            }
+
+            if (live["connected"] as? Bool) == true {
+                connectedDevices += 1
+            }
+
+            uploadBytes += unsignedValue(live["transferRxBytes"])
+            downloadBytes += unsignedValue(live["transferTxBytes"])
+        }
+
+        return TrafficSnapshot(
+            date: Date(),
+            uploadBytes: uploadBytes,
+            downloadBytes: downloadBytes,
+            connectedDevices: connectedDevices
+        )
+    }
+
+    private func unsignedValue(_ value: Any?) -> UInt64 {
+        if let number = value as? NSNumber {
+            return number.uint64Value
+        }
+        if let string = value as? String, let parsed = UInt64(string) {
+            return parsed
+        }
+        return 0
+    }
+}
+
 private final class AppUpdater {
     func checkForUpdates() throws -> UpdateCheckResult {
         let manifestURL = try updateManifestURL()
@@ -896,29 +1075,39 @@ private enum MenuBarIcon {
         image.lockFocus()
 
         NSColor.black.setStroke()
-        NSColor.black.setFill()
 
-        let body = NSBezierPath(ovalIn: NSRect(x: 3.1, y: 2.1, width: 11.8, height: 13.7))
-        body.lineWidth = 1.45
-        body.stroke()
+        let downArrow = NSBezierPath()
+        downArrow.move(to: NSPoint(x: 5.5, y: 14.2))
+        downArrow.line(to: NSPoint(x: 5.5, y: 5.0))
+        downArrow.move(to: NSPoint(x: 2.9, y: 7.4))
+        downArrow.line(to: NSPoint(x: 5.5, y: 4.8))
+        downArrow.line(to: NSPoint(x: 8.1, y: 7.4))
+        downArrow.lineWidth = 1.55
+        downArrow.lineCapStyle = .round
+        downArrow.lineJoinStyle = .round
+        downArrow.stroke()
 
-        let stem = NSBezierPath()
-        stem.move(to: NSPoint(x: 9, y: 14.3))
-        stem.curve(to: NSPoint(x: 11.2, y: 16.1), controlPoint1: NSPoint(x: 9.3, y: 15.4), controlPoint2: NSPoint(x: 10.2, y: 16.1))
-        stem.lineWidth = 1.25
-        stem.lineCapStyle = .round
-        stem.stroke()
+        let upArrow = NSBezierPath()
+        upArrow.move(to: NSPoint(x: 12.5, y: 3.8))
+        upArrow.line(to: NSPoint(x: 12.5, y: 13.0))
+        upArrow.move(to: NSPoint(x: 9.9, y: 10.6))
+        upArrow.line(to: NSPoint(x: 12.5, y: 13.2))
+        upArrow.line(to: NSPoint(x: 15.1, y: 10.6))
+        upArrow.lineWidth = 1.55
+        upArrow.lineCapStyle = .round
+        upArrow.lineJoinStyle = .round
+        upArrow.stroke()
 
-        let cable = NSBezierPath()
-        cable.move(to: NSPoint(x: 5.1, y: 7.2))
-        cable.curve(to: NSPoint(x: 12.9, y: 7.2), controlPoint1: NSPoint(x: 7.0, y: 10.0), controlPoint2: NSPoint(x: 11.0, y: 10.0))
-        cable.lineWidth = 1.55
-        cable.lineCapStyle = .round
-        cable.stroke()
-
-        for point in [NSPoint(x: 5.1, y: 7.2), NSPoint(x: 9, y: 9.2), NSPoint(x: 12.9, y: 7.2)] {
-            NSBezierPath(ovalIn: NSRect(x: point.x - 1.05, y: point.y - 1.05, width: 2.1, height: 2.1)).fill()
-        }
+        let tunnel = NSBezierPath()
+        tunnel.move(to: NSPoint(x: 3.3, y: 2.6))
+        tunnel.curve(
+            to: NSPoint(x: 14.7, y: 2.6),
+            controlPoint1: NSPoint(x: 6.0, y: 1.1),
+            controlPoint2: NSPoint(x: 12.0, y: 1.1)
+        )
+        tunnel.lineWidth = 1.2
+        tunnel.lineCapStyle = .round
+        tunnel.stroke()
 
         image.unlockFocus()
         image.isTemplate = true
@@ -929,9 +1118,11 @@ private enum MenuBarIcon {
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     private let manager = HomeAgentManager()
     private let updater = AppUpdater()
-    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+    private lazy var trafficMonitor = TrafficMonitor(webURL: manager.webURL)
+    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
     private let statusMenuItem = NSMenuItem(title: "Status: Stopped", action: nil, keyEquivalent: "")
+    private let trafficMenuItem = NSMenuItem(title: "Traffic: Waiting for tunnel data", action: nil, keyEquivalent: "")
     private let startMenuItem = NSMenuItem(title: "Start Home Agent", action: #selector(startHomeAgent), keyEquivalent: "s")
     private let stopMenuItem = NSMenuItem(title: "Stop Home Agent", action: #selector(stopHomeAgent), keyEquivalent: "")
     private let restartMenuItem = NSMenuItem(title: "Restart Home Agent", action: #selector(restartHomeAgent), keyEquivalent: "r")
@@ -939,6 +1130,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private let updateMenuItem = NSMenuItem(title: "Check for Updates", action: #selector(checkForUpdates), keyEquivalent: "u")
 
     private var updateInProgress = false
+    private var latestTrafficRates: TrafficRates?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -946,20 +1138,33 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         manager.onStateChange = { [weak self] state in
             self?.refreshMenu(for: state)
         }
+        trafficMonitor.onUpdate = { [weak self] rates in
+            self?.latestTrafficRates = rates
+            self?.refreshTrafficDisplay()
+        }
+        trafficMonitor.start()
         manager.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        trafficMonitor.stop()
         manager.stop(waitForExit: true)
     }
 
     private func configureStatusItem() {
-        statusItem.button?.image = MenuBarIcon.make()
-        statusItem.button?.toolTip = "Tater Tunnel"
+        if let button = statusItem.button {
+            button.image = MenuBarIcon.make()
+            button.imagePosition = .imageLeft
+            button.imageScaling = .scaleProportionallyDown
+            button.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .medium)
+            button.toolTip = "Tater Tunnel"
+        }
 
         let menu = NSMenu()
         statusMenuItem.isEnabled = false
+        trafficMenuItem.isEnabled = false
         menu.addItem(statusMenuItem)
+        menu.addItem(trafficMenuItem)
         menu.addItem(.separator())
 
         openMenuItem.target = self
@@ -1011,6 +1216,24 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             restartMenuItem.isEnabled = true
             openMenuItem.isEnabled = true
         }
+        refreshTrafficDisplay()
+    }
+
+    private func refreshTrafficDisplay() {
+        guard let button = statusItem.button else {
+            return
+        }
+
+        guard case .running = manager.state, let rates = latestTrafficRates else {
+            button.title = ""
+            button.toolTip = "Tater Tunnel"
+            trafficMenuItem.title = "Traffic: Waiting for tunnel data"
+            return
+        }
+
+        button.title = " \(rates.menuBarTitle)"
+        button.toolTip = rates.tooltip
+        trafficMenuItem.title = rates.menuTitle
     }
 
     @objc private func startHomeAgent() {
