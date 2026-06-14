@@ -26,6 +26,14 @@ macos/TaterTunnel/scripts/package_update.sh
 macos/TaterTunnel/scripts/build_dmg.sh
 ```
 
+## Updates
+
+The menu bar app includes a `Check for Updates` item. It reads
+`TaterTunnelUpdateManifestURL` from `Resources/Info.plist`, compares the
+published manifest against the running app version, verifies the downloaded
+update zip with SHA-256, then replaces and relaunches the app after user
+confirmation.
+
 The app stores local state and logs under:
 
 ```text

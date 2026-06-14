@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -568,6 +569,326 @@ private final class HomeAgentManager {
     }
 }
 
+private struct UpdateManifest: Decodable {
+    let version: String
+    let build: Int
+    let url: URL
+    let sha256: String
+    let notes: String?
+
+    var versionLabel: String {
+        "v\(version.trimmingCharacters(in: CharacterSet(charactersIn: "vV")))"
+    }
+}
+
+private struct UpdateCheckResult {
+    let manifest: UpdateManifest
+    let currentVersion: String
+    let currentBuild: Int
+    let isAvailable: Bool
+}
+
+private struct PreparedUpdate {
+    let appBundle: URL
+    let workDirectory: URL
+}
+
+private final class AppUpdater {
+    func checkForUpdates() throws -> UpdateCheckResult {
+        let manifestURL = try updateManifestURL()
+        var request = URLRequest(url: manifestURL)
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        request.timeoutInterval = 30
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("TaterTunnel", forHTTPHeaderField: "User-Agent")
+
+        let data = try loadData(from: request)
+        let manifest = try JSONDecoder().decode(UpdateManifest.self, from: data)
+        let currentVersion = currentAppVersion()
+        let currentBuild = currentAppBuild()
+        return UpdateCheckResult(
+            manifest: manifest,
+            currentVersion: currentVersion,
+            currentBuild: currentBuild,
+            isAvailable: isManifest(manifest, newerThanVersion: currentVersion, build: currentBuild)
+        )
+    }
+
+    func prepareUpdate(_ manifest: UpdateManifest) throws -> PreparedUpdate {
+        guard manifest.url.scheme == "https" else {
+            throw LauncherError("Update downloads must use HTTPS.")
+        }
+
+        let workDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tater-tunnel-update-\(UUID().uuidString)", isDirectory: true)
+        let zipURL = workDirectory.appendingPathComponent("TaterTunnel-\(manifest.versionLabel).zip")
+        let extractDirectory = workDirectory.appendingPathComponent("extract", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
+        do {
+            try downloadFile(from: manifest.url, to: zipURL)
+            try verifySHA256(zipURL, expected: manifest.sha256)
+            try FileManager.default.createDirectory(at: extractDirectory, withIntermediateDirectories: true)
+            try runCheckedProcess(
+                executable: "/usr/bin/ditto",
+                arguments: ["-x", "-k", zipURL.path, extractDirectory.path],
+                currentDirectory: nil
+            )
+
+            let appBundle = try findAppBundle(in: extractDirectory)
+            return PreparedUpdate(appBundle: appBundle, workDirectory: workDirectory)
+        } catch {
+            try? FileManager.default.removeItem(at: workDirectory)
+            throw error
+        }
+    }
+
+    func launchInstaller(for preparedUpdate: PreparedUpdate) throws {
+        let currentApp = Bundle.main.bundleURL
+        guard currentApp.pathExtension == "app" else {
+            throw LauncherError("Updates can only be installed from the Tater Tunnel app bundle.")
+        }
+
+        let installParent = currentApp.deletingLastPathComponent()
+        guard FileManager.default.isWritableFile(atPath: installParent.path) else {
+            throw LauncherError("Tater Tunnel cannot update itself in \(installParent.path). Move it to a writable folder or install manually from the DMG.")
+        }
+
+        let scriptURL = preparedUpdate.workDirectory.appendingPathComponent("install-update.sh")
+        let script = """
+        #!/bin/sh
+        set -eu
+
+        APP_PATH="$1"
+        NEW_APP="$2"
+        WORK_DIR="$3"
+        APP_PID="$4"
+        BACKUP_PATH="${APP_PATH}.previous"
+
+        while kill -0 "$APP_PID" 2>/dev/null; do
+          sleep 0.2
+        done
+
+        rm -rf "$BACKUP_PATH"
+        if [ -d "$APP_PATH" ]; then
+          mv "$APP_PATH" "$BACKUP_PATH"
+        fi
+
+        if ! cp -R "$NEW_APP" "$APP_PATH"; then
+          rm -rf "$APP_PATH"
+          if [ -d "$BACKUP_PATH" ]; then
+            mv "$BACKUP_PATH" "$APP_PATH"
+          fi
+          exit 1
+        fi
+
+        xattr -dr com.apple.quarantine "$APP_PATH" >/dev/null 2>&1 || true
+        open "$APP_PATH"
+        rm -rf "$BACKUP_PATH"
+        rm -rf "$WORK_DIR"
+        """
+
+        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [
+            scriptURL.path,
+            currentApp.path,
+            preparedUpdate.appBundle.path,
+            preparedUpdate.workDirectory.path,
+            "\(getpid())"
+        ]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        try process.run()
+    }
+
+    private func updateManifestURL() throws -> URL {
+        guard
+            let rawValue = Bundle.main.object(forInfoDictionaryKey: "TaterTunnelUpdateManifestURL") as? String,
+            let url = URL(string: rawValue)
+        else {
+            throw LauncherError("The update manifest URL is missing from the app.")
+        }
+        return url
+    }
+
+    private func currentAppVersion() -> String {
+        let rawVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        return (rawVersion ?? "0.0.0").trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
+    }
+
+    private func currentAppBuild() -> Int {
+        let rawBuild = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        return Int(rawBuild ?? "") ?? 0
+    }
+
+    private func isManifest(_ manifest: UpdateManifest, newerThanVersion currentVersion: String, build currentBuild: Int) -> Bool {
+        let versionComparison = compareVersions(manifest.version, currentVersion)
+        if versionComparison == .orderedDescending {
+            return true
+        }
+        if versionComparison == .orderedSame && manifest.build > currentBuild {
+            return true
+        }
+        return false
+    }
+
+    private func compareVersions(_ left: String, _ right: String) -> ComparisonResult {
+        let leftParts = numericVersionParts(left)
+        let rightParts = numericVersionParts(right)
+        let count = max(leftParts.count, rightParts.count)
+        for index in 0..<count {
+            let leftValue = index < leftParts.count ? leftParts[index] : 0
+            let rightValue = index < rightParts.count ? rightParts[index] : 0
+            if leftValue > rightValue {
+                return .orderedDescending
+            }
+            if leftValue < rightValue {
+                return .orderedAscending
+            }
+        }
+        return .orderedSame
+    }
+
+    private func numericVersionParts(_ version: String) -> [Int] {
+        version
+            .trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
+            .split { !$0.isNumber }
+            .map { Int($0) ?? 0 }
+    }
+
+    private func verifySHA256(_ fileURL: URL, expected: String) throws {
+        let expectedHash = expected.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !expectedHash.isEmpty else {
+            throw LauncherError("Update manifest did not include a SHA-256 checksum.")
+        }
+
+        let actualHash = try sha256Hex(of: fileURL)
+        guard actualHash == expectedHash else {
+            throw LauncherError("Downloaded update checksum did not match the manifest.")
+        }
+    }
+
+    private func sha256Hex(of fileURL: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer {
+            try? handle.close()
+        }
+
+        var hasher = SHA256()
+        while true {
+            let data = try handle.read(upToCount: 1024 * 1024) ?? Data()
+            if data.isEmpty {
+                break
+            }
+            hasher.update(data: data)
+        }
+
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func findAppBundle(in directory: URL) throws -> URL {
+        let expected = directory.appendingPathComponent("Tater Tunnel.app", isDirectory: true)
+        if isTaterTunnelApp(expected) {
+            return expected
+        }
+
+        guard let enumerator = FileManager.default.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else {
+            throw LauncherError("Could not inspect downloaded update.")
+        }
+
+        for case let url as URL in enumerator where url.pathExtension == "app" {
+            if isTaterTunnelApp(url) {
+                return url
+            }
+        }
+
+        throw LauncherError("Downloaded update did not contain Tater Tunnel.app.")
+    }
+
+    private func isTaterTunnelApp(_ url: URL) -> Bool {
+        let infoURL = url.appendingPathComponent("Contents/Info.plist")
+        guard
+            let info = NSDictionary(contentsOf: infoURL),
+            let bundleID = info["CFBundleIdentifier"] as? String
+        else {
+            return false
+        }
+        return bundleID == "com.tatertotterson.tatertunnel"
+    }
+
+    private func loadData(from request: URLRequest) throws -> Data {
+        let semaphore = DispatchSemaphore(value: 0)
+        var result: Result<Data, Error>?
+        let task = URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error {
+                result = .failure(error)
+            } else if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                result = .failure(LauncherError("Update check failed with HTTP \(http.statusCode)."))
+            } else {
+                result = .success(data ?? Data())
+            }
+            semaphore.signal()
+        }
+        task.resume()
+        semaphore.wait()
+
+        guard let result else {
+            throw LauncherError("Update check did not complete.")
+        }
+        return try result.get()
+    }
+
+    private func downloadFile(from url: URL, to destination: URL) throws {
+        let semaphore = DispatchSemaphore(value: 0)
+        var result: Result<URL, Error>?
+        let task = URLSession.shared.downloadTask(with: url) { location, response, error in
+            if let error {
+                result = .failure(error)
+            } else if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                result = .failure(LauncherError("Update download failed with HTTP \(http.statusCode)."))
+            } else if let location {
+                result = .success(location)
+            } else {
+                result = .failure(LauncherError("Update download finished without a file."))
+            }
+            semaphore.signal()
+        }
+        task.resume()
+        semaphore.wait()
+
+        guard let result else {
+            throw LauncherError("Update download did not complete.")
+        }
+        let tempURL = try result.get()
+        if FileManager.default.fileExists(atPath: destination.path) {
+            try FileManager.default.removeItem(at: destination)
+        }
+        try FileManager.default.copyItem(at: tempURL, to: destination)
+    }
+
+    private func runCheckedProcess(executable: String, arguments: [String], currentDirectory: URL?) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.currentDirectoryURL = currentDirectory
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw LauncherError("\(executable) exited with status \(process.terminationStatus).")
+        }
+    }
+}
+
 private enum MenuBarIcon {
     static func make() -> NSImage {
         let size = NSSize(width: 18, height: 18)
@@ -607,6 +928,7 @@ private enum MenuBarIcon {
 
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     private let manager = HomeAgentManager()
+    private let updater = AppUpdater()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
 
     private let statusMenuItem = NSMenuItem(title: "Status: Stopped", action: nil, keyEquivalent: "")
@@ -614,6 +936,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private let stopMenuItem = NSMenuItem(title: "Stop Home Agent", action: #selector(stopHomeAgent), keyEquivalent: "")
     private let restartMenuItem = NSMenuItem(title: "Restart Home Agent", action: #selector(restartHomeAgent), keyEquivalent: "r")
     private let openMenuItem = NSMenuItem(title: "Open Tater Tunnel", action: #selector(openTaterTunnel), keyEquivalent: "o")
+    private let updateMenuItem = NSMenuItem(title: "Check for Updates", action: #selector(checkForUpdates), keyEquivalent: "u")
+
+    private var updateInProgress = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -654,6 +979,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         let logs = NSMenuItem(title: "Open Logs Folder", action: #selector(openLogsFolder), keyEquivalent: "l")
         logs.target = self
         menu.addItem(logs)
+
+        updateMenuItem.target = self
+        menu.addItem(updateMenuItem)
         menu.addItem(.separator())
 
         let quit = NSMenuItem(title: "Quit Tater Tunnel", action: #selector(quit), keyEquivalent: "q")
@@ -708,6 +1036,114 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openLogsFolder() {
         manager.openLogsFolder()
+    }
+
+    @objc private func checkForUpdates() {
+        guard !updateInProgress else {
+            return
+        }
+
+        setUpdateMenuBusy("Checking for Updates...")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let result = Result {
+                try self.updater.checkForUpdates()
+            }
+            DispatchQueue.main.async {
+                self.clearUpdateMenuBusy()
+                self.handleUpdateCheck(result)
+            }
+        }
+    }
+
+    private func handleUpdateCheck(_ result: Result<UpdateCheckResult, Error>) {
+        switch result {
+        case .success(let check):
+            if check.isAvailable {
+                promptToInstallUpdate(check)
+            } else {
+                showAlert(
+                    title: "Tater Tunnel is up to date",
+                    message: "You are running version \(check.currentVersion) build \(check.currentBuild)."
+                )
+            }
+        case .failure(let error):
+            showAlert(title: "Could not check for updates", message: error.localizedDescription)
+        }
+    }
+
+    private func promptToInstallUpdate(_ check: UpdateCheckResult) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Tater Tunnel \(check.manifest.versionLabel) is available"
+        let notes = check.manifest.notes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        alert.informativeText = [
+            "Current: v\(check.currentVersion) build \(check.currentBuild)",
+            "Available: \(check.manifest.versionLabel) build \(check.manifest.build)",
+            notes
+        ]
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
+        alert.addButton(withTitle: "Install Update")
+        alert.addButton(withTitle: "Later")
+
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            installUpdate(check.manifest)
+        }
+    }
+
+    private func installUpdate(_ manifest: UpdateManifest) {
+        setUpdateMenuBusy("Downloading Update...")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let result = Result {
+                try self.updater.prepareUpdate(manifest)
+            }
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let preparedUpdate):
+                    self.finishInstallingUpdate(preparedUpdate)
+                case .failure(let error):
+                    self.clearUpdateMenuBusy()
+                    self.showAlert(title: "Could not install update", message: error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    private func finishInstallingUpdate(_ preparedUpdate: PreparedUpdate) {
+        setUpdateMenuBusy("Installing Update...")
+        do {
+            manager.stop(waitForExit: true)
+            try updater.launchInstaller(for: preparedUpdate)
+            NSApp.terminate(nil)
+        } catch {
+            clearUpdateMenuBusy()
+            showAlert(title: "Could not finish update", message: error.localizedDescription)
+        }
+    }
+
+    private func setUpdateMenuBusy(_ title: String) {
+        updateInProgress = true
+        updateMenuItem.title = title
+        updateMenuItem.isEnabled = false
+    }
+
+    private func clearUpdateMenuBusy() {
+        updateInProgress = false
+        updateMenuItem.title = "Check for Updates"
+        updateMenuItem.isEnabled = true
+    }
+
+    private func showAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     @objc private func quit() {
