@@ -86,6 +86,32 @@ Example release image:
 docker run --rm -p 4173:4173 ghcr.io/tatertotterson/tater-tunnel:latest home
 ```
 
+## macOS Home Agent App
+
+The macOS app is a simple menu bar wrapper for the Home Agent. It starts the
+local Tunnel UI on:
+
+```text
+http://127.0.0.1:4173/
+```
+
+Build the app locally:
+
+```bash
+macos/TaterTunnel/scripts/build_app.sh
+```
+
+Build the update zip and DMG:
+
+```bash
+macos/TaterTunnel/scripts/package_update.sh
+macos/TaterTunnel/scripts/build_dmg.sh
+```
+
+Pushing a matching version tag, for example `v0.1.0`, builds the macOS app,
+uploads workflow artifacts, publishes GitHub release assets, and commits the
+generated updater files back to `main`.
+
 ## Run The Two-Agent Prototype
 
 Start the VPS Agent in one terminal:

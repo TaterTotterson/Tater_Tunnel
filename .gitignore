@@ -12,3 +12,5 @@ tests/
 venv/
 dist/
 build/
+macos/TaterTunnel/.build/
+macos/TaterTunnel/build/
