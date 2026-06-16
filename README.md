@@ -88,11 +88,20 @@ docker run --rm -p 4173:4173 ghcr.io/tatertotterson/tater-tunnel:latest home
 
 ## macOS Home Agent App
 
-The macOS app is a simple menu bar wrapper for the Home Agent. It starts the
-local Tunnel UI on:
+The signed macOS app is available from the GitHub releases page:
+
+[Download Tater Tunnel for macOS](https://github.com/TaterTotterson/Tater_Tunnel/releases/latest)
+
+The app is a menu bar wrapper for the Home Agent. It starts the local Tunnel UI on:
 
 ```text
 http://127.0.0.1:4173/
+```
+
+Local state, logs, WireGuard config files, managed Python, and app support files are stored under:
+
+```text
+~/.tatertunnel/
 ```
 
 Build the app locally:
@@ -108,7 +117,8 @@ macos/TaterTunnel/scripts/package_update.sh
 macos/TaterTunnel/scripts/build_dmg.sh
 ```
 
-Pushing a matching version tag, for example `v0.1.0`, builds the macOS app,
+Pushing a matching version tag, for example `v0.1.1`, builds the macOS app,
+signs and notarizes the release when repository variables are configured,
 uploads workflow artifacts, publishes GitHub release assets, and commits the
 generated updater files back to `main`.
 

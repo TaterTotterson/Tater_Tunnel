@@ -1,6 +1,8 @@
 # Tater Tunnel macOS App
 
-This is the menu bar wrapper for the Tater Tunnel Home Agent.
+This is the signed menu bar wrapper for the Tater Tunnel Home Agent.
+
+[Download Tater Tunnel for macOS](https://github.com/TaterTotterson/Tater_Tunnel/releases/latest)
 
 It starts the local Home Agent on:
 

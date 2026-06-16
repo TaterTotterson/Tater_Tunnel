@@ -17,6 +17,7 @@ FINAL_DMG="${PROJECT_DIR}/build/${DMG_NAME}"
 RELEASE_DMG="${RELEASES_DIR}/${DMG_NAME}"
 RW_DMG="${PROJECT_DIR}/build/.${DMG_NAME%.dmg}.rw.dmg"
 STAGING_DIR="${PROJECT_DIR}/build/dmg-staging"
+CODESIGN_IDENTITY="${TATER_TUNNEL_CODESIGN_IDENTITY:-${TATER_CODESIGN_IDENTITY:--}}"
 MOUNT_DIR=""
 DEVICE=""
 
@@ -117,6 +118,17 @@ hdiutil convert "${RW_DMG}" \
   -o "${FINAL_DMG}" >/dev/null
 
 hdiutil verify "${FINAL_DMG}" >/dev/null
+
+if [ "${CODESIGN_IDENTITY}" != "-" ]; then
+  codesign --force --timestamp --sign "${CODESIGN_IDENTITY}" "${FINAL_DMG}"
+  codesign --verify --verbose=2 "${FINAL_DMG}"
+fi
+
+"${SCRIPT_DIR}/notarize_artifact.sh" "${FINAL_DMG}"
+if [ "${TATER_TUNNEL_NOTARIZE:-0}" = "1" ]; then
+  xcrun stapler staple "${FINAL_DMG}"
+  xcrun stapler validate "${FINAL_DMG}"
+fi
 
 mkdir -p "${RELEASES_DIR}"
 cp "${FINAL_DMG}" "${RELEASE_DMG}"
