@@ -117,7 +117,7 @@ macos/TaterTunnel/scripts/package_update.sh
 macos/TaterTunnel/scripts/build_dmg.sh
 ```
 
-Pushing a matching version tag, for example `v0.1.1`, builds the macOS app,
+Pushing a matching version tag, for example `v0.1.2`, builds the macOS app,
 signs and notarizes the release when repository variables are configured,
 uploads workflow artifacts, publishes GitHub release assets, and commits the
 generated updater files back to `main`.
