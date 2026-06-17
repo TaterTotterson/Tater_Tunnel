@@ -10,6 +10,7 @@ import socket
 import ssl
 import threading
 import time
+import traceback
 import uuid
 import urllib.error
 import urllib.request
@@ -970,6 +971,8 @@ class HomeAgentHandler(BaseHTTPRequestHandler):
             self._send_error(error.status, error.message)
         except json.JSONDecodeError:
             self._send_error(HTTPStatus.BAD_REQUEST, "Request body must be valid JSON")
+        except Exception as error:
+            self._send_unexpected_error(error)
 
     def do_DELETE(self) -> None:
         path = urlparse(self.path).path
@@ -992,6 +995,8 @@ class HomeAgentHandler(BaseHTTPRequestHandler):
             self._send_json(self.server.service.revoke_device(device_id))
         except AgentError as error:
             self._send_error(error.status, error.message)
+        except Exception as error:
+            self._send_unexpected_error(error)
 
     def log_message(self, format: str, *args: Any) -> None:
         print(f"{self.address_string()} - {format % args}")
@@ -1035,6 +1040,11 @@ class HomeAgentHandler(BaseHTTPRequestHandler):
 
     def _send_error(self, status: HTTPStatus, message: str) -> None:
         self._send_json({"error": message}, status)
+
+    def _send_unexpected_error(self, error: Exception) -> None:
+        print("Home Agent unexpected error:")
+        traceback.print_exception(type(error), error, error.__traceback__)
+        self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, f"Home Agent internal error: {error}")
 
 
 def management_headers(token: str) -> dict[str, str]:
