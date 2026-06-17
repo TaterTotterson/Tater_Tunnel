@@ -232,6 +232,9 @@ class VpsConfigStore:
         with self._lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             merged = self._merge_defaults(state)
+            existing_stat = None
+            if self.path.exists():
+                existing_stat = self.path.stat()
             fd, temp_name = tempfile.mkstemp(
                 prefix=f".{self.path.name}.",
                 suffix=".tmp",
@@ -243,6 +246,10 @@ class VpsConfigStore:
                 with os.fdopen(fd, "w", encoding="utf-8") as handle:
                     json.dump(merged, handle, indent=2, sort_keys=True)
                     handle.write("\n")
+                if existing_stat:
+                    os.chmod(temp_name, existing_stat.st_mode & 0o777)
+                    if hasattr(os, "chown"):
+                        os.chown(temp_name, existing_stat.st_uid, existing_stat.st_gid)
                 os.replace(temp_name, self.path)
             finally:
                 if os.path.exists(temp_name):
@@ -252,6 +259,13 @@ class VpsConfigStore:
 
     def reset(self) -> dict[str, Any]:
         return self.save(default_vps_state(self.pairing_code))
+
+    def reopen_pairing(self, pairing_code: str | None = None) -> dict[str, Any]:
+        state = self.load()
+        state["pairing"]["enabled"] = True
+        state["pairing"]["claimedAt"] = ""
+        state["pairing"]["code"] = pairing_code or state["pairing"].get("code") or create_pairing_code()
+        return self.save(state)
 
     def _merge_defaults(self, state: dict[str, Any]) -> dict[str, Any]:
         defaults = default_vps_state(self.pairing_code)
@@ -419,6 +433,10 @@ class VpsAgentService:
         state = self.store.reset()
         self._apply_wireguard(state)
         return {"state": self._public_state(self.store.save(state))}
+
+    def reopen_pairing(self, pairing_code: str | None = None) -> dict[str, Any]:
+        state = self.store.reopen_pairing(pairing_code)
+        return {"state": self._public_state(state)}
 
     def relay_request(
         self,
@@ -1068,6 +1086,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--state-file", default=STATE_PATH, type=Path)
     parser.add_argument("--pairing-code", default=None)
     parser.add_argument("--pairing-code-file", default=None, type=Path)
+    parser.add_argument(
+        "--reopen-pairing",
+        action="store_true",
+        help="Enable pairing on an existing claimed VPS without resetting peers.",
+    )
     parser.add_argument("--wireguard-backend", choices=["config", "wg", "system"], default="config")
     parser.add_argument("--wireguard-config", default=WIREGUARD_CONFIG_PATH, type=Path)
     parser.add_argument("--wireguard-interface", default="tater0")
@@ -1081,6 +1104,15 @@ def main(argv: list[str] | None = None) -> int:
         pairing_code = args.pairing_code_file.read_text(encoding="utf-8").strip()
         if not pairing_code:
             parser.error("--pairing-code-file is empty")
+
+    if args.reopen_pairing:
+        store = VpsConfigStore(args.state_file, pairing_code)
+        state = store.reopen_pairing(pairing_code)
+        print(f"State file: {args.state_file}")
+        print(f"Pairing code: {state['pairing']['code']}")
+        print("Pairing mode: enabled")
+        print("VPS Agent pairing was reopened. Restart is not required if the service is already running.")
+        return 0
 
     server = build_server(
         args.host,

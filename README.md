@@ -199,6 +199,16 @@ python3.11 -m tater_tunnel.vps_agent \
 
 The system backend is intentionally explicit. Resetting an agent removes the generated config but leaves any live interface unchanged.
 
+If the VPS is already claimed and you need to pair a fresh Home Agent, reopen pairing explicitly:
+
+```bash
+python3.11 -m tater_tunnel.vps_agent \
+  --pairing-code ABCD-1234 \
+  --reopen-pairing
+```
+
+This maintenance command updates the VPS state file and exits. It keeps the VPS state and approved device peers, enables pairing for the supplied code, and turns pairing off again after the next successful claim. If the VPS Agent service is already running, it can keep running.
+
 The Home Agent still accepts the WireGuard backend flags for development, but the default product flow no longer requires the Home Agent itself to become a WireGuard peer.
 
 ## VPS Installers

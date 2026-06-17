@@ -193,6 +193,19 @@ sudo journalctl -u tater-tunnel-vps -f
 sudo systemctl restart tater-tunnel-vps
 ```
 
+If the VPS is already claimed but you need to pair a fresh Home Agent, reopen
+pairing without resetting approved device peers:
+
+```bash
+cd /opt/tater-tunnel
+sudo -u tater-tunnel python3 -B -m tater_tunnel.vps_agent \
+  --state-file /var/lib/tater-tunnel/vps-agent.json \
+  --pairing-code-file /var/lib/tater-tunnel/pairing-code \
+  --reopen-pairing
+```
+
+The running service will pick up the reopened pairing state on the next request.
+
 For full installs:
 
 ```bash

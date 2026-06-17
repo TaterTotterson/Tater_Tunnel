@@ -51,6 +51,7 @@ let liveRefreshTimer = null;
 let liveRefreshInFlight = false;
 let pairingSettingsOpen = false;
 let routeHealthResults = {};
+let attentionMessage = "";
 
 const appShell = document.querySelector(".app-shell");
 const headerState = document.querySelector("#headerState");
@@ -108,26 +109,33 @@ pairingForm.addEventListener("submit", async (event) => {
   }
 
   await withBusy(pairingForm, async () => {
-    if (apiAvailable) {
-      const result = await requestApi("/api/pair", {
-        method: "POST",
-        body: {
-          vpsAddress: vps,
-          pairingCode: code,
-          securityMode: securityMode.value
-        }
-      });
-      applyState(result.state);
-    } else {
-      applyState({
-        ...state,
-        paired: true,
-        vps,
-        endpoint: `${vps}:51888`,
-        mode: securityMode.value,
-        lastCheck: new Date().toISOString()
-      });
-      saveLocalState();
+    try {
+      if (apiAvailable) {
+        const result = await requestApi("/api/pair", {
+          method: "POST",
+          body: {
+            vpsAddress: vps,
+            pairingCode: code,
+            securityMode: securityMode.value
+          }
+        });
+        applyState(result.state);
+      } else {
+        applyState({
+          ...state,
+          paired: true,
+          vps,
+          endpoint: `${vps}:51888`,
+          mode: securityMode.value,
+          lastCheck: new Date().toISOString()
+        });
+        saveLocalState();
+      }
+    } catch (error) {
+      pairingSettingsOpen = true;
+      vpsAddress.value = vps;
+      pairingCode.value = code;
+      throw new Error(pairingErrorMessage(error));
     }
 
     pairingCode.value = "";
@@ -405,6 +413,7 @@ function showQr(device, enrollment) {
 }
 
 function applyState(nextState) {
+  attentionMessage = "";
   state = normalizeState(nextState);
   render();
   syncLiveRefresh();
@@ -438,6 +447,13 @@ function render() {
     pairingSettingsOpen = true;
   }
 
+  if (attentionMessage) {
+    appShell.classList.remove("is-connected");
+    appShell.classList.add("needs-attention");
+    setHeaderState("Needs Attention");
+    statusText.textContent = attentionMessage;
+  }
+
   claimSummary.hidden = !state.paired;
   claimStatus.textContent = state.paired
     ? `Claimed: ${relayStatus.connected ? "Connected" : "Not connected"}`
@@ -453,8 +469,12 @@ function render() {
       ? `${connectedDevices} connected / ${state.devices.length}`
       : `${state.devices.length} approved`;
   metricCheck.textContent = formatCheckTime(state.lastCheck);
-  vpsAddress.value = state.vps;
-  securityMode.value = state.mode;
+  if (state.paired) {
+    vpsAddress.value = state.vps;
+    securityMode.value = state.mode;
+  } else if (!vpsAddress.value && state.vps) {
+    vpsAddress.value = state.vps;
+  }
 
   addDeviceButton.disabled = !state.paired;
   quickAddButton.disabled = !state.paired;
@@ -979,10 +999,28 @@ function relayAccessPort() {
 }
 
 function setAttention(message) {
+  attentionMessage = message;
   appShell.classList.remove("is-connected");
   appShell.classList.add("needs-attention");
   setHeaderState("Needs Attention");
   statusText.textContent = message;
+}
+
+function pairingErrorMessage(error) {
+  const message = String(error?.message || "Could not pair with the VPS");
+  const normalized = message.toLowerCase();
+
+  if (normalized.includes("pairing mode is disabled")) {
+    return "VPS pairing mode is disabled. Reopen pairing on the VPS with a fresh code, then try Pair again.";
+  }
+  if (normalized.includes("pairing code is not valid")) {
+    return "Pairing code is not valid. Check the code shown by the VPS Agent and try again.";
+  }
+  if (normalized.includes("vps agent is not reachable")) {
+    return `${message}. Check the VPS IP/domain, port 4174, and firewall.`;
+  }
+
+  return message;
 }
 
 function setHeaderState(message) {
