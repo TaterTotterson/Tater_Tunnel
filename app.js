@@ -666,6 +666,24 @@ async function refreshHealth({ silent = false } = {}) {
       saveLocalState();
     }
   } catch (error) {
+    if (apiAvailable && state.paired && isUnpairedApiError(error)) {
+      try {
+        const result = await requestApi("/api/state");
+        applyState(result.state || result);
+        pairingSettingsOpen = true;
+      } catch {
+        applyState({
+          ...structuredClone(defaultState),
+          lastCheck: new Date().toISOString()
+        });
+        pairingSettingsOpen = true;
+      }
+      if (!silent) {
+        setAttention("Pair VPS relay to continue");
+      }
+      return;
+    }
+
     if (apiAvailable && state.paired) {
       applyState({
         ...state,
@@ -689,6 +707,11 @@ async function refreshHealth({ silent = false } = {}) {
   } finally {
     liveRefreshInFlight = false;
   }
+}
+
+function isUnpairedApiError(error) {
+  const message = String(error?.message || "").toLowerCase();
+  return message.includes("no vps is paired") || message.includes("vps management url is not available");
 }
 
 function syncLiveRefresh() {
@@ -832,6 +855,7 @@ async function loadState() {
     try {
       const result = await requestApi("/api/state");
       apiAvailable = true;
+      clearLocalState();
       return normalizeState(result);
     } catch {
       apiAvailable = false;
@@ -1058,6 +1082,14 @@ function loadLocalState() {
 
 function saveLocalState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+function clearLocalState() {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // Browser-local fallback state is optional when the Home Agent API is available.
+  }
 }
 
 function renderQr(value) {
