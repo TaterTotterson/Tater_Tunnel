@@ -205,6 +205,8 @@ sudo -u tater-tunnel python3 -B -m tater_tunnel.vps_agent \
 ```
 
 The running service will pick up the reopened pairing state on the next request.
+The guided setup script's `Update existing install` path can do the same thing
+by answering `yes` to `Reopen pairing after update`.
 
 For full installs:
 

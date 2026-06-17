@@ -13,6 +13,7 @@ PAIRING_CODE=""
 SKIP_PACKAGES="0"
 START_SERVICE="1"
 WIREGUARD_CLIENT_ACCESS="0"
+REOPEN_PAIRING="0"
 
 usage() {
   cat <<'EOF'
@@ -37,6 +38,8 @@ Options:
   --wireguard-client-access
                            Also listen on VPN-facing interfaces so WireGuard
                            clients can reach /relay through the VPS firewall.
+  --reopen-pairing        Re-enable pairing after install/update without
+                           resetting approved peers.
   --skip-packages          Do not install OS packages.
   --no-start               Install service but do not start it.
   -h, --help               Show this help.
@@ -75,6 +78,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --wireguard-client-access)
       WIREGUARD_CLIENT_ACCESS="1"
+      shift
+      ;;
+    --reopen-pairing)
+      REOPEN_PAIRING="1"
       shift
       ;;
     --skip-packages)
@@ -231,6 +238,25 @@ EOF
   fi
 }
 
+reopen_pairing_if_requested() {
+  if [ "$REOPEN_PAIRING" != "1" ]; then
+    return 0
+  fi
+
+  local python_bin
+  python_bin="$(command -v python3)"
+  local state_file="$STATE_DIR/vps-agent.json"
+  local pairing_file="$STATE_DIR/pairing-code"
+
+  (
+    cd "$INSTALL_DIR"
+    runuser -u "$SERVICE_USER" -- "$python_bin" -B -m tater_tunnel.vps_agent \
+      --state-file "$state_file" \
+      --pairing-code-file "$pairing_file" \
+      --reopen-pairing
+  )
+}
+
 print_summary() {
   local service_host="$LISTEN_HOST"
   if [ "$WIREGUARD_CLIENT_ACCESS" = "1" ] && [ "$service_host" = "127.0.0.1" ]; then
@@ -251,6 +277,9 @@ Local agent URL:
 Pairing code:
   $(cat "$STATE_DIR/pairing-code")
 
+Pairing mode:
+  $([ "$REOPEN_PAIRING" = "1" ] && printf 'reopened' || printf 'unchanged')
+
 Advanced setup reminders:
   - Put HTTPS/reverse proxy in front of http://127.0.0.1:$LISTEN_PORT
   - If using WireGuard client relay access, firewall TCP $LISTEN_PORT to tater0 only
@@ -266,4 +295,5 @@ create_service_user
 copy_app_files
 prepare_state
 write_service
+reopen_pairing_if_requested
 print_summary

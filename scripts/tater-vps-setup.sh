@@ -550,6 +550,9 @@ EOF
   if ! confirm "Restart service after update" yes; then
     args+=(--no-start)
   fi
+  if confirm "Reopen pairing after update" yes; then
+    args+=(--reopen-pairing)
+  fi
 
   if ! confirm "Start update now" yes; then
     return 0
