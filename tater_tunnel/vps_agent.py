@@ -400,7 +400,13 @@ class VpsAgentService:
         if not allowed_ip:
             raise VpsAgentError(HTTPStatus.BAD_REQUEST, "Allowed IP is required")
 
-        state["peers"] = [peer for peer in state["peers"] if peer["id"] != peer_id]
+        state["peers"] = [
+            peer
+            for peer in state["peers"]
+            if peer.get("id") != peer_id
+            and peer.get("publicKey") != public_key
+            and peer.get("allowedIp") != allowed_ip
+        ]
         state["peers"].insert(
             0,
             {

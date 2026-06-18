@@ -178,13 +178,18 @@ class HomeAgentService:
         now = utc_now()
         vps_health = self.vps_client.health(management_url)
         wireguard = self.vps_client.wireguard(management_url, self._relay_token(state))
+        live_devices = self._devices_with_live_wireguard(state.get("devices", []), wireguard.get("wireguard") or {})
+        if self._devices_need_peer_sync(live_devices):
+            self._sync_device_peers(state)
+            wireguard = self.vps_client.wireguard(management_url, self._relay_token(state))
+            live_devices = self._devices_with_live_wireguard(state.get("devices", []), wireguard.get("wireguard") or {})
 
         state["lastCheck"] = now
         vps_agent = state.setdefault("vpsAgent", {})
         vps_agent["managementUrl"] = management_url
         vps_agent["health"] = self._vps_health_summary(vps_health, now)
         vps_agent["wireguardRuntime"] = wireguard.get("wireguard") or {}
-        state["devices"] = self._devices_with_live_wireguard(state.get("devices", []), vps_agent["wireguardRuntime"])
+        state["devices"] = live_devices
         return self._with_state(self.store.save(state))
 
     def wireguard_diagnostics(self) -> dict[str, Any]:
@@ -425,6 +430,28 @@ class HomeAgentService:
             },
             self._relay_token(state),
         )
+
+    def _sync_device_peers(self, state: dict[str, Any]) -> None:
+        for device in state.get("devices", []):
+            wireguard = device.get("wireguard") or {}
+            if wireguard.get("publicKey") and wireguard.get("allowedIp"):
+                self._sync_add_peer(state, device)
+
+    def _devices_need_peer_sync(self, devices: list[dict[str, Any]]) -> bool:
+        for device in devices:
+            wireguard = device.get("wireguard") or {}
+            public_key = wireguard.get("publicKey")
+            allowed_ip = wireguard.get("allowedIp")
+            if not public_key or not allowed_ip:
+                continue
+
+            live = wireguard.get("live") or {}
+            if live.get("publicKey") != public_key:
+                return True
+            if allowed_ip not in (live.get("allowedIps") or []):
+                return True
+
+        return False
 
     def _sync_remove_peer(self, state: dict[str, Any], device_id: str) -> None:
         management_url = (state.get("vpsAgent") or {}).get("managementUrl")
