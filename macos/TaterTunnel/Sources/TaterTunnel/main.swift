@@ -598,29 +598,43 @@ private struct TrafficRates {
     let uploadBitsPerSecond: Double
     let connectedDevices: Int
 
-    var menuBarTitle: String {
-        "↓ \(Self.compactRate(downloadBitsPerSecond))  ↑ \(Self.compactRate(uploadBitsPerSecond))"
+    var menuBarUploadLabel: String {
+        Self.tinyRate(uploadBitsPerSecond)
+    }
+
+    var menuBarDownloadLabel: String {
+        Self.tinyRate(downloadBitsPerSecond)
     }
 
     var menuTitle: String {
-        "Traffic: ↓ \(Self.fullRate(downloadBitsPerSecond))  ↑ \(Self.fullRate(uploadBitsPerSecond))"
+        "Traffic: ↑ \(Self.fullRate(uploadBitsPerSecond))  ↓ \(Self.fullRate(downloadBitsPerSecond))"
     }
 
     var tooltip: String {
-        "Download \(Self.fullRate(downloadBitsPerSecond)), upload \(Self.fullRate(uploadBitsPerSecond)) through \(connectedDevices) connected VPN device\(connectedDevices == 1 ? "" : "s")."
+        "Upload \(Self.fullRate(uploadBitsPerSecond)), download \(Self.fullRate(downloadBitsPerSecond)) through \(connectedDevices) connected VPN device\(connectedDevices == 1 ? "" : "s")."
     }
 
-    private static func compactRate(_ bitsPerSecond: Double) -> String {
+    var accessibilityLabel: String {
+        "Tater Tunnel. \(tooltip)"
+    }
+
+    private static func tinyRate(_ bitsPerSecond: Double) -> String {
         if bitsPerSecond >= 1_000_000_000 {
-            return String(format: "%.1f Gb/s", bitsPerSecond / 1_000_000_000)
+            return String(format: "%.1fG", bitsPerSecond / 1_000_000_000)
+        }
+        if bitsPerSecond >= 100_000_000 {
+            return String(format: "%.0fM", bitsPerSecond / 1_000_000)
         }
         if bitsPerSecond >= 1_000_000 {
-            return String(format: "%.1f Mb/s", bitsPerSecond / 1_000_000)
+            return String(format: "%.1fM", bitsPerSecond / 1_000_000)
+        }
+        if bitsPerSecond >= 100_000 {
+            return String(format: "%.0fK", bitsPerSecond / 1_000)
         }
         if bitsPerSecond >= 1_000 {
-            return String(format: "%.0f Kb/s", bitsPerSecond / 1_000)
+            return String(format: "%.1fK", bitsPerSecond / 1_000)
         }
-        return "0 Kb/s"
+        return "0K"
     }
 
     private static func fullRate(_ bitsPerSecond: Double) -> String {
@@ -1069,6 +1083,42 @@ private final class AppUpdater {
 }
 
 private enum MenuBarIcon {
+    static func make(rates: TrafficRates) -> NSImage {
+        let upload = rates.menuBarUploadLabel
+        let download = rates.menuBarDownloadLabel
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 7.2, weight: .semibold)
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.alignment = .left
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.black,
+            .paragraphStyle: paragraphStyle
+        ]
+        let uploadWidth = (upload as NSString).size(withAttributes: attributes).width
+        let downloadWidth = (download as NSString).size(withAttributes: attributes).width
+        let width = max(34, ceil(max(uploadWidth, downloadWidth)) + 13)
+        let size = NSSize(width: width, height: 18)
+        let image = NSImage(size: size)
+        image.lockFocus()
+
+        NSColor.black.setStroke()
+        drawStackedArrow(up: true, centerX: 5.0, minY: 10.1, maxY: 15.9, lineWidth: 1.15)
+        drawStackedArrow(up: false, centerX: 5.0, minY: 2.1, maxY: 7.9, lineWidth: 1.15)
+
+        (upload as NSString).draw(
+            in: NSRect(x: 11.0, y: 8.9, width: width - 11.0, height: 8.6),
+            withAttributes: attributes
+        )
+        (download as NSString).draw(
+            in: NSRect(x: 11.0, y: 0.9, width: width - 11.0, height: 8.6),
+            withAttributes: attributes
+        )
+
+        image.unlockFocus()
+        image.isTemplate = true
+        return image
+    }
+
     static func make() -> NSImage {
         let size = NSSize(width: 18, height: 18)
         let image = NSImage(size: size)
@@ -1113,6 +1163,23 @@ private enum MenuBarIcon {
         image.isTemplate = true
         return image
     }
+
+    private static func drawStackedArrow(up: Bool, centerX: CGFloat, minY: CGFloat, maxY: CGFloat, lineWidth: CGFloat) {
+        let arrow = NSBezierPath()
+        let headY = up ? maxY : minY
+        let tailY = up ? minY : maxY
+        let headOffset: CGFloat = up ? -2.0 : 2.0
+
+        arrow.move(to: NSPoint(x: centerX, y: tailY))
+        arrow.line(to: NSPoint(x: centerX, y: headY))
+        arrow.move(to: NSPoint(x: centerX - 2.0, y: headY + headOffset))
+        arrow.line(to: NSPoint(x: centerX, y: headY))
+        arrow.line(to: NSPoint(x: centerX + 2.0, y: headY + headOffset))
+        arrow.lineWidth = lineWidth
+        arrow.lineCapStyle = .round
+        arrow.lineJoinStyle = .round
+        arrow.stroke()
+    }
 }
 
 private final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -1154,10 +1221,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private func configureStatusItem() {
         if let button = statusItem.button {
             button.image = MenuBarIcon.make()
-            button.imagePosition = .imageLeft
-            button.imageScaling = .scaleProportionallyDown
-            button.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .medium)
+            button.imagePosition = .imageOnly
+            button.imageScaling = .scaleNone
+            button.title = ""
             button.toolTip = "Tater Tunnel"
+            button.setAccessibilityLabel("Tater Tunnel")
         }
 
         let menu = NSMenu()
@@ -1226,13 +1294,17 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
         guard case .running = manager.state, let rates = latestTrafficRates else {
             button.title = ""
+            button.image = MenuBarIcon.make()
             button.toolTip = "Tater Tunnel"
+            button.setAccessibilityLabel("Tater Tunnel")
             trafficMenuItem.title = "Traffic: Waiting for tunnel data"
             return
         }
 
-        button.title = " \(rates.menuBarTitle)"
+        button.title = ""
+        button.image = MenuBarIcon.make(rates: rates)
         button.toolTip = rates.tooltip
+        button.setAccessibilityLabel(rates.accessibilityLabel)
         trafficMenuItem.title = rates.menuTitle
     }
 
