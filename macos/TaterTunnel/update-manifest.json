@@ -1,7 +1,7 @@
 {
-  "version": "0.1.6",
-  "build": 7,
-  "url": "https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/macos/TaterTunnel/releases/TaterTunnel-v0.1.6.zip",
-  "sha256": "0702cfc501810334b5b410e895b31de0f472833da3816dba603ac17595b5e4fe",
-  "notes": "Tater Tunnel macOS update v0.1.6."
+  "version": "0.1.7",
+  "build": 8,
+  "url": "https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/macos/TaterTunnel/releases/TaterTunnel-v0.1.7.zip",
+  "sha256": "0c39cdb49335b984a743c2c963b316ae29e769ac4ad2e7e22dba6585012506c1",
+  "notes": "Tater Tunnel macOS update v0.1.7."
 }
