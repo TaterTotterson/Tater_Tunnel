@@ -55,6 +55,12 @@ DEFAULT_ROUTE_ROOT_PATH_PREFIXES = {
 DEFAULT_ROUTE_TIMEOUT_SECONDS = {
     "matrix": 65,
 }
+CF_1010_MESSAGE = (
+    "Cloudflare blocked the VPS Agent request with error 1010. "
+    "Use a DNS-only/gray-cloud hostname that points directly to the VPS, "
+    "or disable Cloudflare bot/WAF checks for the tunnel hostname. "
+    "Then pair with an HTTPS URL like https://tunnel.example.com, without :4174."
+)
 HOP_BY_HOP_HEADERS = {
     "connection",
     "content-length",
@@ -79,6 +85,18 @@ class AgentError(Exception):
         super().__init__(message)
         self.status = status
         self.message = message
+
+
+def is_cloudflare_1010_response(message: str) -> bool:
+    normalized = re.sub(r"\s+", " ", message).lower()
+    return (
+        "cloudflare" in normalized
+        and (
+            "error code: 1010" in normalized
+            or "error 1010" in normalized
+            or "access denied" in normalized
+        )
+    )
 
 
 class HomeAgentService:
@@ -918,11 +936,17 @@ class VpsAgentClient:
             message = error.read().decode("utf-8")
             if allow_empty and error.code == HTTPStatus.NO_CONTENT:
                 return None
+            if is_cloudflare_1010_response(message):
+                raise AgentError(HTTPStatus.BAD_GATEWAY, CF_1010_MESSAGE) from error
             try:
                 message = json.loads(message).get("error", message)
             except json.JSONDecodeError:
                 pass
-            raise AgentError(HTTPStatus(error.code), f"VPS Agent: {message}") from error
+            try:
+                status = HTTPStatus(error.code)
+            except ValueError:
+                status = HTTPStatus.BAD_GATEWAY
+            raise AgentError(status, f"VPS Agent: {message}") from error
         except OSError as error:
             raise AgentError(HTTPStatus.BAD_GATEWAY, f"VPS Agent is not reachable: {error}") from error
 
