@@ -1,5 +1,7 @@
 # Tater Tunnel
 
+Website: https://tatertunnel.com
+
 Tater Tunnel is a privacy-first secure networking layer for Tater. The user brings a VPS; Tater Tunnel pairs a Home Agent to that VPS over a simple outbound relay path, while remote phones and laptops can use WireGuard VPN mode against the VPS.
 
 This repo currently contains the first product slices:
