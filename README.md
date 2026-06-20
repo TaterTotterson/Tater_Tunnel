@@ -213,12 +213,24 @@ The Home Agent still accepts the WireGuard backend flags for development, but th
 
 ## VPS Installers
 
-Recommended one-command VPS setup:
+Recommended one-command VPS setup from a normal sudo user:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \
   -o /tmp/tater-vps-setup.sh && sudo bash /tmp/tater-vps-setup.sh
 ```
+
+On a brand-new VPS where you are logged in directly as `root`, run it without
+`sudo` first:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \
+  -o /tmp/tater-vps-setup.sh && bash /tmp/tater-vps-setup.sh
+```
+
+The blank VPS path will create a sudo user first, print SSH key setup commands
+for your PC, and ask you to reconnect as the new user before installing Tater
+Tunnel. After key login works, disable password login and root SSH login.
 
 Run the same command later to update an existing VPS install. The setup menu
 has an `Update existing install` option that downloads the latest source,

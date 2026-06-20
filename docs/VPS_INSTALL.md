@@ -4,12 +4,52 @@ Tater Tunnel has two VPS setup paths.
 
 ## Recommended Interactive Setup
 
-For users, the intended VPS flow is one command over SSH:
+For users, the intended VPS flow is one command over SSH.
+
+If you are already logged in as a normal sudo user:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \
   -o /tmp/tater-vps-setup.sh && sudo bash /tmp/tater-vps-setup.sh
 ```
+
+If this is a brand-new VPS and you are logged in directly as `root`, run the
+setup without `sudo` first:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \
+  -o /tmp/tater-vps-setup.sh && bash /tmp/tater-vps-setup.sh
+```
+
+When you choose `Blank VPS full install` from a root login, the setup pauses the
+Tater install and offers to create a real sudo user first. It can copy root SSH
+keys to the new account, then prints PC-side commands like:
+
+```bash
+VPS_HOST=your.vps.ip.or.domain
+ssh-keygen -t ed25519 -C "tater-tunnel-vps"
+ssh-copy-id -i ~/.ssh/id_ed25519.pub tater@$VPS_HOST
+ssh tater@$VPS_HOST
+```
+
+After key login works, reconnect as the sudo user and rerun:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \
+  -o /tmp/tater-vps-setup.sh && sudo bash /tmp/tater-vps-setup.sh
+```
+
+Then harden SSH from the new sudo session:
+
+```bash
+sudo install -d -m 0755 /etc/ssh/sshd_config.d
+printf '%s\n' 'PubkeyAuthentication yes' 'PasswordAuthentication no' 'PermitRootLogin no' | sudo tee /etc/ssh/sshd_config.d/99-tater-hardening.conf
+sudo sshd -t
+sudo systemctl reload ssh || sudo systemctl reload sshd
+```
+
+Keep the root session open until you have tested a second login as the new sudo
+user, so you do not lock yourself out.
 
 To test a branch or fork, pass the repo explicitly:
 

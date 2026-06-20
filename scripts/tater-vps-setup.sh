@@ -59,12 +59,20 @@ Tater Tunnel VPS Setup
 Usage:
   sudo ./scripts/tater-vps-setup.sh [options]
 
-One-command remote use:
+One-command remote use as a sudo user:
   curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \
     -o /tmp/tater-vps-setup.sh && sudo bash /tmp/tater-vps-setup.sh
 
+Fresh VPS root login:
+  curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \
+    -o /tmp/tater-vps-setup.sh && bash /tmp/tater-vps-setup.sh
+
+The root-login flow creates a sudo user first, prints SSH key hardening steps,
+and asks you to reconnect as that user before installing Tater Tunnel.
+
 This interactive launcher provides:
   - Source download/update when launched standalone
+  - First-run sudo user creation when launched from a root login
   - Safe update path for existing installs
   - Arrow-key setup menu
   - Blank VPS full install path
@@ -191,6 +199,158 @@ Run:
 EOF
     exit 1
   fi
+}
+
+is_root_login() {
+  [ "$(id -u)" -eq 0 ] && { [ -z "${SUDO_USER:-}" ] || [ "${SUDO_USER:-}" = "root" ]; }
+}
+
+valid_linux_username() {
+  [[ "$1" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]
+}
+
+prompt_sudo_username() {
+  local username
+
+  while true; do
+    username="$(prompt_value "New sudo username" "tater" yes)"
+    if valid_linux_username "$username"; then
+      printf '%s' "$username"
+      return
+    fi
+    printf '%sUse a Linux username like tater, admin, or tunnel-admin.%s\n' "$RED" "$RESET" >&2
+  done
+}
+
+ensure_sudo_available() {
+  if command -v sudo >/dev/null 2>&1; then
+    return
+  fi
+
+  if command -v apt-get >/dev/null 2>&1; then
+    stage "Installing sudo"
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y sudo
+    return
+  fi
+
+  cat <<EOF >&2
+sudo is not installed, and this setup only knows how to install it with apt-get.
+Install sudo for your distro, create a sudo user, then rerun this setup.
+EOF
+  exit 1
+}
+
+create_sudo_user() {
+  local username="$1"
+  local home_dir
+  local primary_group
+
+  ensure_sudo_available
+
+  if getent passwd "$username" >/dev/null 2>&1; then
+    printf '%sUser %s already exists. Adding it to the sudo group.%s\n' "$DIM" "$username" "$RESET"
+  else
+    stage "Creating sudo user $username"
+    if command -v adduser >/dev/null 2>&1; then
+      adduser --gecos "" "$username"
+    else
+      useradd -m -s /bin/bash "$username"
+      passwd "$username"
+    fi
+  fi
+
+  usermod -aG sudo "$username"
+
+  home_dir="$(getent passwd "$username" | awk -F: '{ print $6 }')"
+  home_dir="${home_dir:-/home/$username}"
+  primary_group="$(id -gn "$username")"
+
+  if [ -s /root/.ssh/authorized_keys ]; then
+    if confirm "Copy root SSH authorized_keys to $username" yes; then
+      install -d -m 0700 -o "$username" -g "$primary_group" "$home_dir/.ssh"
+      install -m 0600 -o "$username" -g "$primary_group" /root/.ssh/authorized_keys "$home_dir/.ssh/authorized_keys"
+    fi
+  fi
+}
+
+print_relogin_instructions() {
+  local username="$1"
+  local host_hint
+
+  host_hint="$(hostname -I 2>/dev/null | awk '{ print $1 }')"
+  host_hint="${host_hint:-your.vps.ip.or.domain}"
+
+  cat <<EOF
+
+${GREEN}${BOLD}Sudo user is ready.${RESET}
+
+Stop here, open a terminal on your PC, and log back in as the new user before
+installing Tater Tunnel:
+
+  VPS_HOST=$host_hint
+  ssh $username@\$VPS_HOST
+
+If you do not already use an SSH key for this VPS, run these from your PC:
+
+  ssh-keygen -t ed25519 -C "tater-tunnel-vps"
+  ssh-copy-id -i ~/.ssh/id_ed25519.pub $username@\$VPS_HOST
+  ssh $username@\$VPS_HOST
+
+Then rerun the Tater Tunnel setup as the sudo user:
+
+  curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \\
+    -o /tmp/tater-vps-setup.sh && sudo bash /tmp/tater-vps-setup.sh
+
+After you confirm key-based login works, you can harden SSH with:
+
+  sudo install -d -m 0755 /etc/ssh/sshd_config.d
+  printf '%s\\n' 'PubkeyAuthentication yes' 'PasswordAuthentication no' 'PermitRootLogin no' | sudo tee /etc/ssh/sshd_config.d/99-tater-hardening.conf
+  sudo sshd -t
+  sudo systemctl reload ssh || sudo systemctl reload sshd
+
+Keep the current root SSH session open until you have tested a second login as
+$username. That avoids locking yourself out.
+EOF
+}
+
+handle_root_login_for_blank_vps() {
+  local username
+
+  if [ "${TATER_TUNNEL_ALLOW_ROOT_LOGIN:-0}" = "1" ] || ! is_root_login; then
+    return
+  fi
+
+  clear_screen
+  print_logo
+  cat <<EOF
+
+${ORANGE}${BOLD}Root login detected.${RESET}
+
+For a blank VPS, create a normal sudo user first. That keeps the Tater install
+and future SSH access safer than doing day-to-day work as root.
+
+This setup can create the user, add it to the sudo group, optionally copy your
+root SSH keys, and then stop so you can reconnect as the new user.
+
+EOF
+
+  if ! confirm "Create a sudo user before installing Tater Tunnel" yes; then
+    cat <<EOF
+
+No install was started. Reconnect as a non-root sudo user, then rerun setup:
+
+  curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \\
+    -o /tmp/tater-vps-setup.sh && sudo bash /tmp/tater-vps-setup.sh
+EOF
+    exit 1
+  fi
+
+  username="$(prompt_sudo_username)"
+  create_sudo_user "$username"
+  print_relogin_instructions "$username"
+  exit 0
 }
 
 require_bootstrap_packages() {
@@ -569,6 +729,7 @@ run_full_install() {
   local pairing_code
   local args
 
+  handle_root_login_for_blank_vps
   require_root_for_install
   clear_screen
   print_logo

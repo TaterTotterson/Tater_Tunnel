@@ -7,6 +7,7 @@ SSH_PORT="22"
 LISTEN_PORT="4174"
 PAIRING_CODE=""
 NO_FIREWALL="0"
+ALLOW_ROOT_LOGIN="0"
 
 usage() {
   cat <<'EOF'
@@ -28,6 +29,7 @@ Options:
   --listen-port PORT      Local VPS Agent port. Default: 4174
   --pairing-code CODE     Initial pairing code. Generated if omitted.
   --no-firewall           Do not configure UFW.
+  --allow-root-login      Advanced: install even when logged in directly as root.
   -h, --help              Show this help.
 EOF
 }
@@ -58,6 +60,10 @@ while [ "$#" -gt 0 ]; do
       NO_FIREWALL="1"
       shift
       ;;
+    --allow-root-login)
+      ALLOW_ROOT_LOGIN="1"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -73,6 +79,34 @@ done
 require_root() {
   if [ "$(id -u)" -ne 0 ]; then
     echo "Run this installer with sudo." >&2
+    exit 1
+  fi
+}
+
+guard_root_login() {
+  if [ "$ALLOW_ROOT_LOGIN" = "1" ]; then
+    return
+  fi
+
+  if [ "$(id -u)" -eq 0 ] && { [ -z "${SUDO_USER:-}" ] || [ "${SUDO_USER:-}" = "root" ]; }; then
+    cat <<'EOF' >&2
+Root login detected.
+
+For a blank VPS, create a normal sudo user before running the full installer.
+Use the guided setup first:
+
+  curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \
+    -o /tmp/tater-vps-setup.sh && bash /tmp/tater-vps-setup.sh
+
+It can create the sudo user, show SSH key setup commands, and stop. Then log in
+as the new user and rerun setup with sudo:
+
+  curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \
+    -o /tmp/tater-vps-setup.sh && sudo bash /tmp/tater-vps-setup.sh
+
+Advanced override:
+  ./scripts/install-vps-full.sh --allow-root-login --domain tunnel.example.com
+EOF
     exit 1
   fi
 }
@@ -207,6 +241,7 @@ Useful checks:
 EOF
 }
 
+guard_root_login
 require_root
 normalize_domain
 install_caddy
