@@ -237,6 +237,10 @@ has an `Update existing install` option that downloads the latest source,
 preserves `/var/lib/tater-tunnel` state, keeps the current service host/port,
 and restarts the VPS Agent.
 
+The same menu also has `Uninstall VPS install`. It removes the VPS Agent
+service and installed app files, and asks before purging pairing/device state,
+WireGuard config, downloaded source, or Caddy proxy settings.
+
 To test a branch or fork, pass the repo explicitly:
 
 ```bash
@@ -270,6 +274,12 @@ firewall rules:
 
 ```bash
 sudo ./scripts/install-vps-agent.sh
+```
+
+To uninstall directly from the repo:
+
+```bash
+sudo ./scripts/uninstall-vps.sh
 ```
 
 See `docs/VPS_INSTALL.md` for the full setup flow. The full installer keeps the

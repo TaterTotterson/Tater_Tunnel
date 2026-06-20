@@ -87,6 +87,7 @@ Use the arrow keys to select:
 - `Update existing install`
 - `Blank VPS full install`
 - `Advanced existing VPS install`
+- `Uninstall VPS install`
 - `View setup notes`
 
 The menu asks for the needed values, shows a setup summary, and then runs the
@@ -223,6 +224,45 @@ Then pair the Home Agent with:
 ```text
 VPS IP or Domain: https://tunnel.example.com
 Pairing Code: sudo cat /var/lib/tater-tunnel/pairing-code
+```
+
+## Uninstall
+
+Use the guided menu and choose `Uninstall VPS install`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \
+  -o /tmp/tater-vps-setup.sh && sudo bash /tmp/tater-vps-setup.sh
+```
+
+The uninstall path removes:
+
+- `tater-tunnel-vps` systemd service.
+- Installed app files in `/opt/tater-tunnel`.
+- Live `tater0` WireGuard interface if it exists.
+- Tater WireGuard UFW rules, unless you choose to keep them.
+- The `tater-tunnel` service user/group if state/config data is purged.
+
+It asks before deleting:
+
+- Pairing/device state in `/var/lib/tater-tunnel`.
+- WireGuard config in `/etc/tater-tunnel`.
+- Downloaded source checkout in `/opt/tater-tunnel-src`.
+- A Caddyfile proxy that points to the Tater VPS Agent.
+
+It does not uninstall shared packages such as Python, Caddy, UFW, WireGuard, or
+WireGuard tools.
+
+Direct uninstall command:
+
+```bash
+sudo ./scripts/uninstall-vps.sh
+```
+
+Full purge:
+
+```bash
+sudo ./scripts/uninstall-vps.sh --purge-data --remove-source
 ```
 
 ## Service Commands

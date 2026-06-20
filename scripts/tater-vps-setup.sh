@@ -14,7 +14,7 @@ IN_REPO_SOURCE="0"
 SERVICE_NAME="tater-tunnel-vps"
 SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME.service"
 
-if [ -f "$SCRIPT_DIR/install-vps-full.sh" ] && [ -f "$SCRIPT_DIR/install-vps-agent.sh" ]; then
+if [ -f "$SCRIPT_DIR/install-vps-full.sh" ] && [ -f "$SCRIPT_DIR/install-vps-agent.sh" ] && [ -f "$SCRIPT_DIR/uninstall-vps.sh" ]; then
   IN_REPO_SOURCE="1"
 fi
 
@@ -40,6 +40,7 @@ MENU_ITEMS=(
   "Update existing install"
   "Blank VPS full install"
   "Advanced existing VPS install"
+  "Uninstall VPS install"
   "View setup notes"
   "Exit"
 )
@@ -48,6 +49,7 @@ MENU_HELP=(
   "Updates code, preserves pairing/state/service settings, and restarts the VPS Agent."
   "Installs Tater VPS Agent, Caddy automatic HTTPS, WireGuard, and UFW rules."
   "Installs only the Tater VPS Agent. You manage HTTPS, firewall, and proxy."
+  "Removes the VPS Agent and app files, with optional state/config purge."
   "Shows the install notes and port checklist."
   "Leaves setup without changing anything."
 )
@@ -77,6 +79,7 @@ This interactive launcher provides:
   - Arrow-key setup menu
   - Blank VPS full install path
   - Advanced existing VPS install path
+  - Uninstall path with optional data purge
   - Setup summary and progress handoff
 
 Options:
@@ -103,21 +106,10 @@ clear_screen() {
 }
 
 print_logo() {
-  cat <<EOF
-${ORANGE}${BOLD}
-             .-""""""-.
-          .-'  .----.  '-.
-        .'    / .--. \\    '.
-       /     |  (  )  |     \\
-      |      |   '--' |      |
-      |      |  .--.  |      |
-       \\      \\ '--' /      /
-        '.     '----'     .'
-          '-.          .-'
-             '--------'
-${RESET}${BOLD}        TATER TUNNEL VPS SETUP${RESET}
-${DIM}        secure relay + WireGuard device VPN${RESET}
-EOF
+  printf '%s+------------------------------------------------------------+%s\n' "$ORANGE$BOLD" "$RESET"
+  printf '%s|%s %-58s %s|%s\n' "$ORANGE$BOLD" "$RESET$BOLD" "Tater Tunnel VPS Setup" "$RESET$ORANGE$BOLD" "$RESET"
+  printf '%s|%s %-58s %s|%s\n' "$ORANGE$BOLD" "$RESET$DIM" "Secure relay + WireGuard device VPN" "$RESET$ORANGE$BOLD" "$RESET"
+  printf '%s+------------------------------------------------------------+%s\n' "$ORANGE$BOLD" "$RESET"
 }
 
 pause() {
@@ -191,7 +183,7 @@ require_root_for_install() {
     print_logo
     cat <<EOF
 
-${RED}${BOLD}Root access is needed for install steps.${RESET}
+${RED}${BOLD}Root access is needed for setup changes.${RESET}
 
 Run:
   sudo ./scripts/tater-vps-setup.sh
@@ -522,7 +514,7 @@ show_progress_handoff() {
   clear_screen
   print_logo
   print_stage "1" "3" "Validated setup choices"
-  print_stage "2" "3" "Starting installer"
+  print_stage "2" "3" "Running selected action"
   printf '%s%s%s\n' "$DIM" "$title" "$RESET"
   print_stage "3" "3" "Installer output"
   "$@"
@@ -554,17 +546,20 @@ service_arg() {
 render_menu() {
   local selected="$1"
   local index
+  local number
 
   clear_screen
   print_logo
-  printf '\n%sUse Up/Down arrows, Enter to select, q to quit.%s\n\n' "$DIM" "$RESET"
+  printf '\n%sUse Up/Down arrows, Enter to select, q to quit.%s\n' "$DIM" "$RESET"
+  printf '%sCurrent source:%s %s\n\n' "$DIM" "$RESET" "$SCRIPT_DIR"
 
   for index in "${!MENU_ITEMS[@]}"; do
+    number="$(printf '%02d' "$((index + 1))")"
     if [ "$index" -eq "$selected" ]; then
-      printf '  %s> %s%s\n' "$GREEN$BOLD" "${MENU_ITEMS[$index]}" "$RESET"
-      printf '    %s%s%s\n' "$DIM" "${MENU_HELP[$index]}" "$RESET"
+      printf '  %s> [%s] %-31s%s\n' "$GREEN$BOLD" "$number" "${MENU_ITEMS[$index]}" "$RESET"
+      printf '       %s%s%s\n' "$DIM" "${MENU_HELP[$index]}" "$RESET"
     else
-      printf '    %s\n' "${MENU_ITEMS[$index]}"
+      printf '    [%s] %s\n' "$number" "${MENU_ITEMS[$index]}"
     fi
   done
 }
@@ -589,7 +584,7 @@ interactive_menu() {
     elif [ -z "$key" ]; then
       return "$selected"
     elif [ "$key" = "q" ] || [ "$key" = "Q" ]; then
-      return 3
+      return "$((${#MENU_ITEMS[@]} - 1))"
     fi
   done
 }
@@ -603,6 +598,7 @@ numbered_menu() {
   printf '\n'
   for index in "${!MENU_ITEMS[@]}"; do
     printf '  %s. %s\n' "$((index + 1))" "${MENU_ITEMS[$index]}"
+    printf '     %s%s%s\n' "$DIM" "${MENU_HELP[$index]}" "$RESET"
   done
 
   while true; do
@@ -610,14 +606,10 @@ numbered_menu() {
     if ! read -r choice; then
       exit 1
     fi
-    case "$choice" in
-      1|2|3|4|5)
-        return "$((choice - 1))"
-        ;;
-      *)
-        printf '%sChoose a listed number.%s\n' "$RED" "$RESET" >&2
-        ;;
-    esac
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#MENU_ITEMS[@]}" ]; then
+      return "$((choice - 1))"
+    fi
+    printf '%sChoose a listed number.%s\n' "$RED" "$RESET" >&2
   done
 }
 
@@ -836,6 +828,74 @@ EOF
   show_progress_handoff "Agent install progress will appear below." "${args[@]}"
 }
 
+run_uninstall() {
+  local args
+  local purge_data="0"
+  local remove_source="0"
+  local remove_ufw_rules="1"
+  local disable_caddy_proxy="0"
+
+  require_root_for_install
+  clear_screen
+  print_logo
+  cat <<EOF
+
+${BOLD}Uninstall VPS install${RESET}
+This removes the Tater Tunnel VPS Agent service and installed app files.
+It keeps pairing/device state and WireGuard config unless you choose to purge.
+
+EOF
+
+  if confirm "Purge pairing/device state and WireGuard config" no; then
+    purge_data="1"
+  fi
+  if confirm "Remove downloaded setup source at $SOURCE_DIR" no; then
+    remove_source="1"
+  fi
+  if ! confirm "Remove Tater WireGuard UFW rules" yes; then
+    remove_ufw_rules="0"
+  fi
+  if confirm "Disable Caddy proxy if it points to Tater Tunnel" no; then
+    disable_caddy_proxy="1"
+  fi
+
+  args=("$SCRIPT_DIR/uninstall-vps.sh" --yes)
+  if [ "$purge_data" = "1" ]; then
+    args+=(--purge-data)
+  fi
+  if [ "$remove_source" = "1" ]; then
+    args+=(--remove-source)
+  fi
+  if [ "$remove_ufw_rules" != "1" ]; then
+    args+=(--keep-ufw-rules)
+  fi
+  if [ "$disable_caddy_proxy" = "1" ]; then
+    args+=(--disable-caddy-proxy)
+  fi
+
+  clear_screen
+  print_logo
+  cat <<EOF
+
+${BOLD}Ready to uninstall:${RESET}
+  Service/app:  removed
+  State/config: $([ "$purge_data" = "1" ] && printf 'purged' || printf 'kept')
+  Source dir:   $([ "$remove_source" = "1" ] && printf 'removed' || printf 'kept')
+  UFW rules:    $([ "$remove_ufw_rules" = "1" ] && printf 'Tater WireGuard rules removed' || printf 'unchanged')
+  Caddy proxy:  $([ "$disable_caddy_proxy" = "1" ] && printf 'disabled if it points to Tater' || printf 'unchanged')
+
+Shared packages like Python, Caddy, UFW, and WireGuard tools will not be
+uninstalled automatically.
+
+EOF
+
+  if ! confirm "Uninstall now" no; then
+    return 0
+  fi
+
+  show_progress_handoff "Uninstall progress will appear below." "${args[@]}"
+}
+
 view_notes() {
   clear_screen
   print_logo
@@ -877,8 +937,12 @@ main() {
         run_advanced_install
         exit 0
         ;;
-      3) view_notes ;;
-      4)
+      3)
+        run_uninstall
+        exit 0
+        ;;
+      4) view_notes ;;
+      5)
         clear_screen
         print_logo
         printf '\n%sNo changes made.%s\n' "$DIM" "$RESET"
