@@ -39,6 +39,89 @@ VALID_MODES = {"minimal", "safe", "lockdown"}
 RELAY_POLL_TIMEOUT_SECONDS = 20
 RELAY_REQUEST_TIMEOUT_SECONDS = 75
 RELAY_MAX_BODY_BYTES = 2 * 1024 * 1024
+LANDING_MASCOT_PATH = PROJECT_ROOT / "assets" / "tater-vps-mascot.png"
+LANDING_PAGE_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tater Tunnel</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #12100d;
+      --panel: #1f1b16;
+      --text: #fff4e4;
+      --muted: #cdbda9;
+      --accent: #ff981a;
+      --line: #3a3127;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at 50% 20%, rgba(255, 152, 26, 0.18), transparent 34rem),
+        linear-gradient(180deg, #18130f, var(--bg));
+      color: var(--text);
+      font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      width: min(38rem, calc(100vw - 2rem));
+      padding: clamp(1.25rem, 4vw, 2rem);
+      text-align: center;
+    }
+    img {
+      display: block;
+      width: min(18rem, 72vw);
+      height: auto;
+      margin: 0 auto 1rem;
+      filter: drop-shadow(0 28px 60px rgba(0, 0, 0, 0.38));
+    }
+    section {
+      padding: 1.35rem;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--panel) 90%, transparent);
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.32);
+    }
+    h1 {
+      margin: 0 0 0.45rem;
+      font-size: clamp(1.75rem, 4vw, 2.35rem);
+      line-height: 1.1;
+      letter-spacing: 0;
+    }
+    p {
+      max-width: 30rem;
+      margin: 0 auto;
+      color: var(--muted);
+    }
+    a {
+      display: inline-flex;
+      margin-top: 1.1rem;
+      color: #1a1007;
+      background: var(--accent);
+      text-decoration: none;
+      font-weight: 700;
+      padding: 0.65rem 0.85rem;
+      border-radius: 7px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <img src="/assets/tater-vps-mascot.png" alt="Tater mascot connecting two ethernet cables">
+    <section>
+      <h1>Tater Tunnel is running.</h1>
+      <p>Nothing to see here, just a private relay keeping the cables connected.</p>
+      <a href="/api/health">Check health</a>
+    </section>
+  </main>
+</body>
+</html>
+"""
 HOP_BY_HOP_HEADERS = {
     "connection",
     "content-length",
@@ -607,7 +690,11 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
         try:
             parsed = urlparse(self.path)
             path = parsed.path
-            if path == "/api/health":
+            if path in {"", "/"}:
+                self._send_landing_page()
+            elif path == "/assets/tater-vps-mascot.png":
+                self._send_static_png(LANDING_MASCOT_PATH)
+            elif path == "/api/health":
                 self._send_json(self.server.service.health())
             elif path == "/api/state":
                 self.server.service.require_management_token(self._management_token())
@@ -630,6 +717,12 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
 
     def do_HEAD(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path in {"", "/"}:
+            self._send_landing_page()
+            return
+        if parsed.path == "/assets/tater-vps-mascot.png":
+            self._send_static_png(LANDING_MASCOT_PATH)
+            return
         if parsed.path.startswith("/relay"):
             self._handle_public_relay("HEAD", parsed)
             return
@@ -891,6 +984,31 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
 
     def _send_error(self, status: HTTPStatus, message: str) -> None:
         self._send_json({"error": message}, status)
+
+    def _send_landing_page(self) -> None:
+        body = LANDING_PAGE_HTML.encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _send_static_png(self, path: Path) -> None:
+        try:
+            body = path.read_bytes()
+        except OSError:
+            self._send_error(HTTPStatus.NOT_FOUND, "Asset not found")
+            return
+
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
 
     def _send_unexpected_error(self, error: Exception) -> None:
         print("VPS Agent unexpected error:")

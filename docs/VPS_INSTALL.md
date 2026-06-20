@@ -153,6 +153,9 @@ VPS IP or Domain: https://tunnel.example.com
 Pairing Code: shown by the installer
 ```
 
+Opening `https://tunnel.example.com/` in a browser shows a small Tater Tunnel
+status page. API and pairing endpoints remain under `/api/*`.
+
 After a phone connects to the WireGuard profile, the local Tater app relay is:
 
 ```text
