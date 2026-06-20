@@ -87,6 +87,7 @@ Use the arrow keys to select:
 - `Update existing install`
 - `Blank VPS full install`
 - `Advanced existing VPS install`
+- `Optional ZNC install`
 - `Uninstall VPS install`
 - `View setup notes`
 
@@ -225,6 +226,36 @@ Then pair the Home Agent with:
 VPS IP or Domain: https://tunnel.example.com
 Pairing Code: sudo cat /var/lib/tater-tunnel/pairing-code
 ```
+
+## Optional ZNC Install
+
+The guided menu can install ZNC as an optional user-owned IRC bouncer. Choose
+`Optional ZNC install`.
+
+The installer:
+
+- Installs the Debian/Ubuntu `znc` package.
+- Runs ZNC as the selected sudo user, not as root.
+- Keeps ZNC config/data in that user's home folder, for example
+  `/home/tater/.znc`.
+- Writes a systemd service named `znc-USER.service`.
+- Can run ZNC's interactive `--makeconf` wizard immediately.
+- Can optionally open the selected TCP port in UFW.
+
+Direct command:
+
+```bash
+sudo ./scripts/install-znc.sh --user tater --makeconf
+```
+
+If you skip the interactive config wizard during install, finish later with:
+
+```bash
+sudo -iu tater znc --makeconf --datadir /home/tater/.znc
+sudo systemctl enable --now znc-tater
+```
+
+Replace `tater` with the sudo user that should own the ZNC config.
 
 ## Uninstall
 

@@ -241,6 +241,10 @@ The same menu also has `Uninstall VPS install`. It removes the VPS Agent
 service and installed app files, and asks before purging pairing/device state,
 WireGuard config, downloaded source, or Caddy proxy settings.
 
+The menu also includes `Optional ZNC install`. That installs ZNC for the sudo
+user, keeps the ZNC config under that user's home directory, and can run ZNC's
+interactive config wizard.
+
 To test a branch or fork, pass the repo explicitly:
 
 ```bash
@@ -280,6 +284,12 @@ To uninstall directly from the repo:
 
 ```bash
 sudo ./scripts/uninstall-vps.sh
+```
+
+To install the optional ZNC add-on directly:
+
+```bash
+sudo ./scripts/install-znc.sh --user "$USER" --makeconf
 ```
 
 See `docs/VPS_INSTALL.md` for the full setup flow. The full installer keeps the

@@ -14,7 +14,7 @@ IN_REPO_SOURCE="0"
 SERVICE_NAME="tater-tunnel-vps"
 SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME.service"
 
-if [ -f "$SCRIPT_DIR/install-vps-full.sh" ] && [ -f "$SCRIPT_DIR/install-vps-agent.sh" ] && [ -f "$SCRIPT_DIR/uninstall-vps.sh" ]; then
+if [ -f "$SCRIPT_DIR/install-vps-full.sh" ] && [ -f "$SCRIPT_DIR/install-vps-agent.sh" ] && [ -f "$SCRIPT_DIR/uninstall-vps.sh" ] && [ -f "$SCRIPT_DIR/install-znc.sh" ]; then
   IN_REPO_SOURCE="1"
 fi
 
@@ -40,6 +40,7 @@ MENU_ITEMS=(
   "Update existing install"
   "Blank VPS full install"
   "Advanced existing VPS install"
+  "Optional ZNC install"
   "Uninstall VPS install"
   "View setup notes"
   "Exit"
@@ -49,6 +50,7 @@ MENU_HELP=(
   "Updates code, preserves pairing/state/service settings, and restarts the VPS Agent."
   "Installs Tater VPS Agent, Caddy automatic HTTPS, WireGuard, and UFW rules."
   "Installs only the Tater VPS Agent. You manage HTTPS, firewall, and proxy."
+  "Installs ZNC for the sudo user with config stored in that user's home."
   "Removes the VPS Agent and app files, with optional state/config purge."
   "Shows the install notes and port checklist."
   "Leaves setup without changing anything."
@@ -79,6 +81,7 @@ This interactive launcher provides:
   - Arrow-key setup menu
   - Blank VPS full install path
   - Advanced existing VPS install path
+  - Optional ZNC install path
   - Uninstall path with optional data purge
   - Setup summary and progress handoff
 
@@ -214,6 +217,30 @@ prompt_sudo_username() {
   done
 }
 
+default_sudo_user() {
+  if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+    printf '%s' "$SUDO_USER"
+    return
+  fi
+
+  printf 'tater'
+}
+
+prompt_port() {
+  local label="$1"
+  local default_value="$2"
+  local port
+
+  while true; do
+    port="$(prompt_value "$label" "$default_value" yes)"
+    if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
+      printf '%s' "$port"
+      return
+    fi
+    printf '%sUse a TCP port from 1 to 65535.%s\n' "$RED" "$RESET" >&2
+  done
+}
+
 ensure_sudo_available() {
   if command -v sudo >/dev/null 2>&1; then
     return
@@ -332,6 +359,44 @@ EOF
     cat <<EOF
 
 No install was started. Reconnect as a non-root sudo user, then rerun setup:
+
+  curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \\
+    -o /tmp/tater-vps-setup.sh && sudo bash /tmp/tater-vps-setup.sh
+EOF
+    exit 1
+  fi
+
+  username="$(prompt_sudo_username)"
+  create_sudo_user "$username"
+  print_relogin_instructions "$username"
+  exit 0
+}
+
+handle_root_login_for_user_addon() {
+  local username
+
+  if [ "${TATER_TUNNEL_ALLOW_ROOT_LOGIN:-0}" = "1" ] || ! is_root_login; then
+    return
+  fi
+
+  clear_screen
+  print_logo
+  cat <<EOF
+
+${ORANGE}${BOLD}Root login detected.${RESET}
+
+Optional user services like ZNC should run as a normal sudo user, with config
+stored in that user's home folder.
+
+This setup can create the sudo user, optionally copy root SSH keys, and then
+stop so you can reconnect as that user before installing ZNC.
+
+EOF
+
+  if ! confirm "Create a sudo user before installing ZNC" yes; then
+    cat <<EOF
+
+No ZNC install was started. Reconnect as a non-root sudo user, then rerun setup:
 
   curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \\
     -o /tmp/tater-vps-setup.sh && sudo bash /tmp/tater-vps-setup.sh
@@ -828,6 +893,81 @@ EOF
   show_progress_handoff "Agent install progress will appear below." "${args[@]}"
 }
 
+run_znc_install() {
+  local target_user
+  local znc_port
+  local run_makeconf="0"
+  local open_firewall="0"
+  local args
+
+  handle_root_login_for_user_addon
+  require_root_for_install
+  clear_screen
+  print_logo
+  cat <<EOF
+
+${BOLD}Optional ZNC install${RESET}
+This installs ZNC as a user-owned IRC bouncer. The config/data directory stays
+in the user's home folder, for example /home/tater/.znc.
+
+EOF
+
+  while true; do
+    target_user="$(prompt_value "Linux user to run ZNC" "$(default_sudo_user)" yes)"
+    if ! valid_linux_username "$target_user"; then
+      printf '%sUse a Linux username like tater, admin, or tunnel-admin.%s\n' "$RED" "$RESET" >&2
+      continue
+    fi
+    if [ "$target_user" = "root" ]; then
+      printf '%sZNC should not run as root. Choose a normal sudo user.%s\n' "$RED" "$RESET" >&2
+      continue
+    fi
+    break
+  done
+  if ! id -u "$target_user" >/dev/null 2>&1; then
+    if confirm "User $target_user does not exist. Create it as a sudo user" yes; then
+      create_sudo_user "$target_user"
+    else
+      return 1
+    fi
+  fi
+
+  znc_port="$(prompt_port "ZNC listener port" "6697")"
+  if confirm "Run ZNC interactive config wizard now" yes; then
+    run_makeconf="1"
+  fi
+  if confirm "Open $znc_port/tcp in UFW for ZNC clients" no; then
+    open_firewall="1"
+  fi
+
+  args=("$SCRIPT_DIR/install-znc.sh" --user "$target_user" --port "$znc_port")
+  if [ "$run_makeconf" = "1" ]; then
+    args+=(--makeconf)
+  fi
+  if [ "$open_firewall" = "1" ]; then
+    args+=(--open-firewall)
+  fi
+
+  clear_screen
+  print_logo
+  cat <<EOF
+
+${BOLD}Ready to install ZNC:${RESET}
+  User:        $target_user
+  Config:      ~${target_user}/.znc
+  Port:        $znc_port/tcp
+  Make config: $([ "$run_makeconf" = "1" ] && printf 'run now' || printf 'print command for later')
+  Firewall:    $([ "$open_firewall" = "1" ] && printf 'open %s/tcp' "$znc_port" || printf 'unchanged')
+
+EOF
+
+  if ! confirm "Install ZNC now" yes; then
+    return 0
+  fi
+
+  show_progress_handoff "ZNC install progress will appear below." "${args[@]}"
+}
+
 run_uninstall() {
   local args
   local purge_data="0"
@@ -938,11 +1078,15 @@ main() {
         exit 0
         ;;
       3)
+        run_znc_install
+        exit 0
+        ;;
+      4)
         run_uninstall
         exit 0
         ;;
-      4) view_notes ;;
-      5)
+      5) view_notes ;;
+      6)
         clear_screen
         print_logo
         printf '\n%sNo changes made.%s\n' "$DIM" "$RESET"
