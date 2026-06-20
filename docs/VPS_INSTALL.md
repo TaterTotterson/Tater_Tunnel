@@ -326,7 +326,7 @@ For full installs:
 
 ```bash
 sudo systemctl status caddy
-curl -fsS https://tunnel.example.com/api/health
+curl -fsS https://tunnel.example.com/
 ```
 
 For WireGuard live status:

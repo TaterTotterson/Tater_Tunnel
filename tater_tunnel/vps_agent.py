@@ -69,15 +69,17 @@ LANDING_PAGE_HTML = """<!doctype html>
       font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     main {
-      width: min(38rem, calc(100vw - 2rem));
-      padding: clamp(1.25rem, 4vw, 2rem);
+      width: min(42rem, calc(100vw - 2rem));
+      padding: clamp(1rem, 4vw, 2rem);
       text-align: center;
     }
     img {
       display: block;
-      width: min(18rem, 72vw);
+      width: min(21rem, 78vw);
+      max-height: min(58vh, 36rem);
       height: auto;
-      margin: 0 auto 1rem;
+      object-fit: contain;
+      margin: 0 auto clamp(0.75rem, 3vw, 1.1rem);
       filter: drop-shadow(0 28px 60px rgba(0, 0, 0, 0.38));
     }
     section {
@@ -98,15 +100,21 @@ LANDING_PAGE_HTML = """<!doctype html>
       margin: 0 auto;
       color: var(--muted);
     }
-    a {
-      display: inline-flex;
-      margin-top: 1.1rem;
-      color: #1a1007;
-      background: var(--accent);
-      text-decoration: none;
-      font-weight: 700;
-      padding: 0.65rem 0.85rem;
-      border-radius: 7px;
+    @media (min-width: 720px) {
+      main {
+        display: grid;
+        grid-template-columns: minmax(14rem, 21rem) minmax(0, 1fr);
+        align-items: center;
+        gap: clamp(1rem, 4vw, 2rem);
+        text-align: left;
+      }
+      img {
+        width: 100%;
+        margin: 0;
+      }
+      p {
+        margin: 0;
+      }
     }
   </style>
 </head>
@@ -116,7 +124,6 @@ LANDING_PAGE_HTML = """<!doctype html>
     <section>
       <h1>Tater Tunnel is running.</h1>
       <p>Nothing to see here, just a private relay keeping the cables connected.</p>
-      <a href="/api/health">Check health</a>
     </section>
   </main>
 </body>
@@ -385,8 +392,10 @@ class VpsAgentService:
     def state(self) -> dict[str, Any]:
         return self._public_state(self.store.load())
 
-    def health(self) -> dict[str, Any]:
+    def health(self, token: str = "") -> dict[str, Any]:
         state = self.store.load()
+        if state["claimed"]:
+            self._require_relay_token(token)
         state["lastCheck"] = utc_now()
         saved = self.store.save(state)
         return {
@@ -695,7 +704,7 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
             elif path == "/assets/tater-vps-mascot.png":
                 self._send_static_png(LANDING_MASCOT_PATH)
             elif path == "/api/health":
-                self._send_json(self.server.service.health())
+                self._send_json(self.server.service.health(self._management_token()))
             elif path == "/api/state":
                 self.server.service.require_management_token(self._management_token())
                 self._send_json(self.server.service.state())

@@ -194,12 +194,13 @@ class HomeAgentService:
             raise AgentError(HTTPStatus.CONFLICT, "VPS management URL is not available")
 
         now = utc_now()
-        vps_health = self.vps_client.health(management_url)
-        wireguard = self.vps_client.wireguard(management_url, self._relay_token(state))
+        relay_token = self._relay_token(state)
+        vps_health = self.vps_client.health(management_url, relay_token)
+        wireguard = self.vps_client.wireguard(management_url, relay_token)
         live_devices = self._devices_with_live_wireguard(state.get("devices", []), wireguard.get("wireguard") or {})
         if self._devices_need_peer_sync(live_devices):
             self._sync_device_peers(state)
-            wireguard = self.vps_client.wireguard(management_url, self._relay_token(state))
+            wireguard = self.vps_client.wireguard(management_url, relay_token)
             live_devices = self._devices_with_live_wireguard(state.get("devices", []), wireguard.get("wireguard") or {})
 
         state["lastCheck"] = now
@@ -842,8 +843,8 @@ class HomeAgentService:
 
 
 class VpsAgentClient:
-    def health(self, base_url: str) -> dict[str, Any]:
-        return self._request("GET", base_url, "/api/health", None)
+    def health(self, base_url: str, token: str = "") -> dict[str, Any]:
+        return self._request("GET", base_url, "/api/health", None, headers=management_headers(token))
 
     def wireguard(self, base_url: str, token: str = "") -> dict[str, Any]:
         return self._request("GET", base_url, "/api/wireguard", None, headers=management_headers(token))

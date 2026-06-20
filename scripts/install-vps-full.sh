@@ -236,7 +236,7 @@ Private local service:
 Useful checks:
   sudo systemctl status tater-tunnel-vps
   sudo systemctl status caddy
-  curl -fsS https://$DOMAIN/api/health
+  curl -fsS https://$DOMAIN/
   sudo wg show tater0
 EOF
 }
