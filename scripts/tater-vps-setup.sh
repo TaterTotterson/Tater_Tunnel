@@ -615,7 +615,7 @@ render_menu() {
 
   clear_screen
   print_logo
-  printf '\n%sUse Up/Down arrows, Enter to select, q to quit.%s\n' "$DIM" "$RESET"
+  printf '\n%sUse Up/Down arrows, j/k, w/s, number keys, Enter to select, q to quit.%s\n' "$DIM" "$RESET"
   printf '%sCurrent source:%s %s\n\n' "$DIM" "$RESET" "$SCRIPT_DIR"
 
   for index in "${!MENU_ITEMS[@]}"; do
@@ -632,22 +632,30 @@ render_menu() {
 interactive_menu() {
   local selected=0
   local key
+  local escape_sequence
 
   while true; do
     render_menu "$selected"
     IFS= read -rsn1 key || exit 0
     if [ "$key" = $'\x1b' ]; then
-      IFS= read -rsn2 -t 0.2 key || true
-      case "$key" in
-        "[A")
+      escape_sequence=""
+      IFS= read -rsn5 -t 0.15 escape_sequence || true
+      case "$escape_sequence" in
+        "[A"*|"OA"*)
           selected=$(( (selected + ${#MENU_ITEMS[@]} - 1) % ${#MENU_ITEMS[@]} ))
           ;;
-        "[B")
+        "[B"*|"OB"*)
           selected=$(( (selected + 1) % ${#MENU_ITEMS[@]} ))
           ;;
       esac
     elif [ -z "$key" ]; then
       return "$selected"
+    elif [ "$key" = "k" ] || [ "$key" = "K" ] || [ "$key" = "w" ] || [ "$key" = "W" ]; then
+      selected=$(( (selected + ${#MENU_ITEMS[@]} - 1) % ${#MENU_ITEMS[@]} ))
+    elif [ "$key" = "j" ] || [ "$key" = "J" ] || [ "$key" = "s" ] || [ "$key" = "S" ]; then
+      selected=$(( (selected + 1) % ${#MENU_ITEMS[@]} ))
+    elif [[ "$key" =~ ^[0-9]$ ]] && [ "$key" -ge 1 ] && [ "$key" -le "${#MENU_ITEMS[@]}" ]; then
+      return "$((key - 1))"
     elif [ "$key" = "q" ] || [ "$key" = "Q" ]; then
       return "$((${#MENU_ITEMS[@]} - 1))"
     fi
@@ -679,7 +687,9 @@ numbered_menu() {
 }
 
 choose_menu() {
-  if [ -t 0 ]; then
+  if [ "${TATER_TUNNEL_MENU:-}" = "numbered" ]; then
+    numbered_menu
+  elif [ -t 0 ]; then
     interactive_menu
   else
     numbered_menu
