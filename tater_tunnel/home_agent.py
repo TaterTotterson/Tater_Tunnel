@@ -1163,6 +1163,25 @@ def websocket_url_for(target_url: str) -> str:
     raise AgentError(HTTPStatus.BAD_GATEWAY, "Route target cannot be used for WebSockets")
 
 
+class PreloadedSocket:
+    def __init__(self, wrapped: socket.socket, preloaded: bytes = b""):
+        self.wrapped = wrapped
+        self.preloaded = bytearray(preloaded)
+
+    def recv(self, length: int) -> bytes:
+        if self.preloaded:
+            chunk = self.preloaded[:length]
+            del self.preloaded[:length]
+            return bytes(chunk)
+        return self.wrapped.recv(length)
+
+    def sendall(self, data: bytes) -> None:
+        self.wrapped.sendall(data)
+
+    def close(self) -> None:
+        self.wrapped.close()
+
+
 def open_local_websocket(
     target_url: str,
     relay_headers: dict[str, Any],
@@ -1199,9 +1218,8 @@ def open_local_websocket(
     protocol = header_value(relay_headers, "Sec-WebSocket-Protocol")
     if protocol:
         headers["Sec-WebSocket-Protocol"] = protocol
-    origin = header_value(relay_headers, "Origin")
-    if origin:
-        headers["Origin"] = origin
+    if header_value(relay_headers, "Origin"):
+        headers["Origin"] = websocket_target_origin(parsed.scheme, host)
     cookie = header_value(relay_headers, "Cookie")
     if cookie:
         headers["Cookie"] = cookie
@@ -1212,7 +1230,7 @@ def open_local_websocket(
     ).encode("utf-8")
     local_socket.sendall(request)
 
-    status, response_headers = read_websocket_handshake_response(local_socket)
+    status, response_headers, preloaded = read_websocket_handshake_response(local_socket)
     if status != HTTPStatus.SWITCHING_PROTOCOLS:
         close_socket(local_socket)
         raise OSError(f"local WebSocket returned HTTP {status}")
@@ -1223,10 +1241,15 @@ def open_local_websocket(
         close_socket(local_socket)
         raise OSError("local WebSocket accept key did not match")
 
-    return local_socket, response_headers
+    return PreloadedSocket(local_socket, preloaded), response_headers
 
 
-def read_websocket_handshake_response(local_socket: socket.socket) -> tuple[int, dict[str, str]]:
+def websocket_target_origin(scheme: str, host: str) -> str:
+    origin_scheme = "https" if scheme == "wss" else "http"
+    return f"{origin_scheme}://{host}"
+
+
+def read_websocket_handshake_response(local_socket: socket.socket) -> tuple[int, dict[str, str], bytes]:
     buffer = b""
     while b"\r\n\r\n" not in buffer:
         chunk = local_socket.recv(4096)
@@ -1236,7 +1259,8 @@ def read_websocket_handshake_response(local_socket: socket.socket) -> tuple[int,
         if len(buffer) > 65536:
             raise OSError("local WebSocket handshake is too large")
 
-    head = buffer.split(b"\r\n\r\n", 1)[0].decode("iso-8859-1", errors="replace")
+    head_bytes, preloaded = buffer.split(b"\r\n\r\n", 1)
+    head = head_bytes.decode("iso-8859-1", errors="replace")
     lines = head.split("\r\n")
     status_parts = lines[0].split(" ", 2)
     if len(status_parts) < 2 or not status_parts[1].isdigit():
@@ -1248,7 +1272,7 @@ def read_websocket_handshake_response(local_socket: socket.socket) -> tuple[int,
             continue
         name, value = line.split(":", 1)
         headers[name.strip()] = value.strip()
-    return int(status_parts[1]), headers
+    return int(status_parts[1]), headers, preloaded
 
 
 def websocket_response_headers(headers: dict[str, str]) -> dict[str, str]:
