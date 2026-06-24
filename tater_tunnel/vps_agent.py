@@ -21,7 +21,9 @@ from urllib.parse import unquote, urljoin, urlparse
 from .wireguard import KeyPair, WireGuardKeyProvider
 from .wireguard_runtime import WireGuardRuntimeError, build_wireguard_runtime
 from .websocket_relay import (
+    OPCODE_BINARY,
     OPCODE_CLOSE,
+    OPCODE_CONTINUATION,
     OPCODE_PING,
     OPCODE_PONG,
     frame_to_payload,
@@ -39,6 +41,7 @@ VALID_MODES = {"minimal", "safe", "lockdown"}
 RELAY_POLL_TIMEOUT_SECONDS = 20
 RELAY_REQUEST_TIMEOUT_SECONDS = 75
 RELAY_MAX_BODY_BYTES = 2 * 1024 * 1024
+WEBSOCKET_BINARY_CLIENT_FRAME_COALESCE_SECONDS = 0.1
 LANDING_MASCOT_PATH = PROJECT_ROOT / "assets" / "tater-vps-mascot.png"
 LANDING_PAGE_HTML = """<!doctype html>
 <html lang="en">
@@ -170,7 +173,11 @@ class WebSocketRelaySession:
         self._push(self._server_frames, frame)
 
     def poll_client_frames(self, timeout: float = RELAY_POLL_TIMEOUT_SECONDS) -> dict[str, Any]:
-        return self._poll(self._client_frames, timeout)
+        return self._poll(
+            self._client_frames,
+            timeout,
+            binary_coalesce_seconds=WEBSOCKET_BINARY_CLIENT_FRAME_COALESCE_SECONDS,
+        )
 
     def poll_server_frames(self, timeout: float = 1.0) -> dict[str, Any]:
         return self._poll(self._server_frames, timeout)
@@ -181,7 +188,13 @@ class WebSocketRelaySession:
                 queue.append(frame)
             self._condition.notify_all()
 
-    def _poll(self, queue: list[dict[str, Any]], timeout: float) -> dict[str, Any]:
+    def _poll(
+        self,
+        queue: list[dict[str, Any]],
+        timeout: float,
+        coalesce_seconds: float = 0.0,
+        binary_coalesce_seconds: float = 0.0,
+    ) -> dict[str, Any]:
         deadline = time.monotonic() + timeout
         with self._condition:
             while not queue and not self.closed:
@@ -189,6 +202,19 @@ class WebSocketRelaySession:
                 if remaining <= 0:
                     break
                 self._condition.wait(remaining)
+
+            if queue and binary_coalesce_seconds > coalesce_seconds:
+                first_opcode = int(queue[0].get("opcode") or 0)
+                if first_opcode in {OPCODE_BINARY, OPCODE_CONTINUATION}:
+                    coalesce_seconds = binary_coalesce_seconds
+
+            if queue and not self.closed and coalesce_seconds > 0.0:
+                coalesce_deadline = time.monotonic() + coalesce_seconds
+                while not self.closed:
+                    remaining = coalesce_deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    self._condition.wait(remaining)
 
             frames = list(queue)
             queue.clear()
