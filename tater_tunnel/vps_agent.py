@@ -720,6 +720,7 @@ class VpsAgentServer(ThreadingHTTPServer):
 
 class VpsAgentHandler(BaseHTTPRequestHandler):
     server: VpsAgentServer
+    protocol_version = "HTTP/1.1"
 
     def do_GET(self) -> None:
         try:

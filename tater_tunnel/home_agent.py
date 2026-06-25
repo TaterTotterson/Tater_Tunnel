@@ -989,6 +989,7 @@ class HomeAgentServer(ThreadingHTTPServer):
 
 class HomeAgentHandler(BaseHTTPRequestHandler):
     server: HomeAgentServer
+    protocol_version = "HTTP/1.1"
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
