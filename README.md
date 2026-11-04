@@ -339,3 +339,9 @@ The first useful version should let a user:
 Remote devices can use WireGuard VPN mode by scanning the generated WireGuard config/QR. A future native Tater app can wrap that flow the same way UniFi wraps WireGuard with Teleport/WiFiman.
 
 Local network access, guest access, multi-home support, and site-to-site networking should stay out of the first build unless the enforcement model is complete.
+
+## License and trademarks
+
+This project is licensed under the [GNU Affero General Public License v3.0](LICENSE).
+
+The Tater name and logo are governed by the [Tater Trademark Policy](TRADEMARKS.md).\n
