@@ -69,11 +69,11 @@ Usage:
 
 One-command remote use as a sudo user:
   curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \
-    -o /tmp/tater-vps-setup.sh && sudo bash /tmp/tater-vps-setup.sh
+    -o "$HOME/tater-vps-setup.sh" && sudo bash "$HOME/tater-vps-setup.sh"
 
 Fresh VPS root login:
   curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \
-    -o /tmp/tater-vps-setup.sh && bash /tmp/tater-vps-setup.sh
+    -o "$HOME/tater-vps-setup.sh" && bash "$HOME/tater-vps-setup.sh"
 
 The root-login flow creates a sudo user first, prints SSH key hardening steps,
 and asks you to reconnect as that user before installing Tater Tunnel.
@@ -511,6 +511,11 @@ create_sudo_user() {
   fi
 
   usermod -aG sudo "$username"
+  if ! id -nG "$username" | tr ' ' '\n' | grep -qx sudo; then
+    printf 'Failed to add %s to the sudo group. No installation was started.\n' "$username" >&2
+    exit 1
+  fi
+  printf '%sVerified: %s belongs to the sudo group (active on next login).%s\n' "$GREEN" "$username" "$RESET"
 
   home_dir="$(getent passwd "$username" | awk -F: '{ print $6 }')"
   home_dir="${home_dir:-/home/$username}"
@@ -550,7 +555,7 @@ If you do not already use an SSH key for this VPS, run these from your PC:
 Then rerun the Tater Tunnel setup as the sudo user:
 
   curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \\
-    -o /tmp/tater-vps-setup.sh && sudo bash /tmp/tater-vps-setup.sh
+    -o "\$HOME/tater-vps-setup.sh" && sudo bash "\$HOME/tater-vps-setup.sh"
 
 After you confirm key-based login works, you can harden SSH with:
 
@@ -591,7 +596,7 @@ EOF
 No install was started. Reconnect as a non-root sudo user, then rerun setup:
 
   curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \\
-    -o /tmp/tater-vps-setup.sh && sudo bash /tmp/tater-vps-setup.sh
+    -o "\$HOME/tater-vps-setup.sh" && sudo bash "\$HOME/tater-vps-setup.sh"
 EOF
     exit 1
   fi
@@ -629,7 +634,7 @@ EOF
 No ZNC install was started. Reconnect as a non-root sudo user, then rerun setup:
 
   curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \\
-    -o /tmp/tater-vps-setup.sh && sudo bash /tmp/tater-vps-setup.sh
+    -o "\$HOME/tater-vps-setup.sh" && sudo bash "\$HOME/tater-vps-setup.sh"
 EOF
     exit 1
   fi

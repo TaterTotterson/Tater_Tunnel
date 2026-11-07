@@ -46,7 +46,7 @@ On a normal sudo account, run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \
-  -o /tmp/tater-vps-setup.sh && sudo bash /tmp/tater-vps-setup.sh
+  -o "$HOME/tater-vps-setup.sh" && sudo bash "$HOME/tater-vps-setup.sh"
 ```
 
 Choose `Blank VPS full install` on a fresh Debian or Ubuntu VPS. The guided

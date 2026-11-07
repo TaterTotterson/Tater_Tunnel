@@ -6,7 +6,7 @@ From a normal sudo account on Debian or Ubuntu:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \
-  -o /tmp/tater-vps-setup.sh && sudo bash /tmp/tater-vps-setup.sh
+  -o "$HOME/tater-vps-setup.sh" && sudo bash "$HOME/tater-vps-setup.sh"
 ```
 
 Use the arrow keys to choose:
