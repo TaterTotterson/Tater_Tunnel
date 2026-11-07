@@ -1,0 +1,100 @@
+name: TaterTunnel
+
+options:
+  minimumXcodeGenVersion: 2.46.0
+  deploymentTarget:
+    macOS: "13.0"
+  createIntermediateGroups: true
+
+configs:
+  Debug: debug
+  Release: release
+
+packages:
+  WireGuardKit:
+    path: Generated/wireguard-apple
+
+settings:
+  base:
+    DEVELOPMENT_TEAM: 8BHV7Y2D9D
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+    SWIFT_VERSION: "5.0"
+  configs:
+    Release:
+      CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+      OTHER_CODE_SIGN_FLAGS: "--timestamp"
+
+targets:
+  WireGuardGoBridge:
+    type: ""
+    platform: macOS
+    legacy:
+      toolPath: /usr/bin/make
+      arguments: build
+      passSettings: true
+      workingDirectory: "$(PROJECT_DIR)/Generated/wireguard-apple/Sources/WireGuardKitGo"
+    settings:
+      base:
+        SDKROOT: macosx
+
+  TaterTunnelNetworkExtension:
+    type: system-extension
+    platform: macOS
+    productName: com.tatertotterson.tatertunnel.network-extension
+    sources:
+      - path: Sources/TaterTunnelNetworkExtension
+    dependencies:
+      - package: WireGuardKit
+      - target: WireGuardGoBridge
+    settings:
+      base:
+        ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: NO
+        CODE_SIGN_ENTITLEMENTS: Resources/TaterTunnelNetworkExtension.entitlements
+        CODE_SIGN_STYLE: Manual
+        ENABLE_HARDENED_RUNTIME: YES
+        INFOPLIST_FILE: Resources/TaterTunnelNetworkExtension-Info.plist
+        MARKETING_VERSION: "0.2.0"
+        CURRENT_PROJECT_VERSION: "15"
+        PRODUCT_BUNDLE_IDENTIFIER: com.tatertotterson.tatertunnel.network-extension
+        PRODUCT_NAME: com.tatertotterson.tatertunnel.network-extension
+        PROVISIONING_PROFILE_SPECIFIER: "$(TATER_TUNNEL_EXTENSION_PROFILE)"
+        SKIP_INSTALL: YES
+
+  TaterTunnel:
+    type: application
+    platform: macOS
+    productName: Tater Tunnel
+    sources:
+      - path: Sources/TaterTunnel
+      - path: Resources/TaterTunnelIcon.icns
+        buildPhase: resources
+      - path: Generated/TaterTunnelSource
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - target: TaterTunnelNetworkExtension
+        embed: true
+      - sdk: AppKit.framework
+      - sdk: NetworkExtension.framework
+      - sdk: SystemExtensions.framework
+    settings:
+      base:
+        CODE_SIGN_ENTITLEMENTS: Resources/TaterTunnel.entitlements
+        CODE_SIGN_STYLE: Manual
+        COMBINE_HIDPI_IMAGES: YES
+        ENABLE_HARDENED_RUNTIME: YES
+        EXECUTABLE_NAME: TaterTunnel
+        INFOPLIST_FILE: Resources/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.tatertotterson.tatertunnel
+        PRODUCT_NAME: Tater Tunnel
+        PROVISIONING_PROFILE_SPECIFIER: "$(TATER_TUNNEL_APP_PROFILE)"
+
+schemes:
+  TaterTunnel:
+    build:
+      targets:
+        TaterTunnel: all
+    run:
+      config: Debug
+    archive:
+      config: Release

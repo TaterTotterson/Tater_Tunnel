@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#11100f">
+    <title>Tater Tunnel</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="app-shell" id="appShell">
+      <header class="topbar">
+        <img class="brand-logo" src="assets/tater-logo-primary.png" alt="Tater">
+      </header>
+
+      <main>
+        <section class="hero" aria-labelledby="pageTitle">
+          <div class="hero-copy">
+            <p class="eyebrow">Tater Tunnel</p>
+            <h1 id="pageTitle">Private remote access</h1>
+            <p class="hero-description">
+              Reach selected apps at home through your own VPS. Only approved WireGuard devices can enter the private path.
+            </p>
+            <div class="connection-pill" id="connectionPill">
+              <span class="status-light" aria-hidden="true"></span>
+              <span id="statusText">Ready to connect</span>
+            </div>
+          </div>
+          <div class="hero-art" aria-hidden="true">
+            <img src="assets/tater-mascot-cable-connect.png" alt="">
+          </div>
+        </section>
+
+        <section class="status-strip" aria-label="Tunnel summary">
+          <div>
+            <span>Home Agent</span>
+            <strong id="metricHome">Ready</strong>
+          </div>
+          <div>
+            <span>VPS</span>
+            <strong id="metricVps">Not connected</strong>
+          </div>
+          <div>
+            <span>Devices</span>
+            <strong id="metricDevices">0 approved</strong>
+          </div>
+          <div>
+            <span>Private services</span>
+            <strong id="metricServices">0 shared</strong>
+          </div>
+        </section>
+
+        <div class="notice" id="notice" role="status" hidden></div>
+
+        <section class="workspace-section connection-section" aria-labelledby="connectionTitle">
+          <div class="section-heading">
+            <div>
+              <p class="step-label">Step 1</p>
+              <h2 id="connectionTitle">Connect your VPS</h2>
+            </div>
+            <span class="section-state is-waiting" id="connectionState">Not connected</span>
+          </div>
+
+          <div class="connection-summary" id="connectionSummary" hidden>
+            <div>
+              <span>Private WireGuard path</span>
+              <strong id="connectedVps">VPS</strong>
+              <small id="connectionDetail">Checking the tunnel</small>
+            </div>
+            <button class="secondary-button" id="checkConnectionButton" type="button">Check connection</button>
+          </div>
+
+          <form class="pair-form" id="pairForm">
+            <label>
+              <span>VPS URL</span>
+              <input id="vpsAddress" name="vpsAddress" type="url" inputmode="url" placeholder="https://tunnel.example.com" autocomplete="url" required>
+            </label>
+            <label>
+              <span>One-time pairing code</span>
+              <input id="pairingCode" name="pairingCode" type="text" placeholder="ABCDE-23456" autocomplete="one-time-code" spellcheck="false" required>
+            </label>
+            <button class="primary-button" type="submit">Connect</button>
+          </form>
+
+          <details class="connection-settings" id="connectionSettings" hidden>
+            <summary>Connection settings</summary>
+            <p>Reopen pairing on the VPS before connecting again. Reset removes this Home Agent's local tunnel identity.</p>
+            <div class="settings-actions">
+              <button class="ghost-button" id="connectAgainButton" type="button">Connect again</button>
+              <button class="danger-button" id="resetButton" type="button">Reset Home Agent</button>
+            </div>
+          </details>
+        </section>
+
+        <section class="workspace-section" aria-labelledby="devicesTitle">
+          <div class="section-heading">
+            <div>
+              <p class="step-label">Step 2</p>
+              <h2 id="devicesTitle">Approved devices</h2>
+            </div>
+            <button class="secondary-button" id="addDeviceButton" type="button">Add device</button>
+          </div>
+
+          <form class="inline-form device-form" id="deviceForm" hidden>
+            <label>
+              <span>Person</span>
+              <input id="personName" name="person" type="text" placeholder="Spud Lord" required>
+            </label>
+            <label>
+              <span>Device name</span>
+              <input id="deviceName" name="name" type="text" placeholder="My iPhone">
+            </label>
+            <label>
+              <span>Device type</span>
+              <select id="deviceType" name="type">
+                <option>Phone</option>
+                <option>Laptop</option>
+                <option>Tablet</option>
+                <option>Desktop</option>
+              </select>
+            </label>
+            <div class="form-actions">
+              <button class="primary-button" type="submit">Create QR</button>
+              <button class="ghost-button" id="cancelDeviceButton" type="button">Cancel</button>
+            </div>
+          </form>
+
+          <div class="qr-panel" id="qrPanel" hidden>
+            <div class="qr-code"><img id="qrImage" alt="WireGuard enrollment QR code"></div>
+            <div>
+              <p class="step-label">Ready to scan</p>
+              <h3 id="qrTitle">Device configuration</h3>
+              <p>Open WireGuard on the device and scan this code. The configuration is shown once.</p>
+              <code id="qrToken"></code>
+              <button class="ghost-button" id="closeQrButton" type="button">Done</button>
+            </div>
+          </div>
+
+          <div class="empty-state" id="emptyDevices">
+            <strong>No approved devices yet</strong>
+            <span>Add a phone or computer, then scan its WireGuard QR code.</span>
+          </div>
+          <div class="item-list" id="deviceList"></div>
+        </section>
+
+        <section class="workspace-section" aria-labelledby="servicesTitle">
+          <div class="section-heading">
+            <div>
+              <p class="step-label">Step 3</p>
+              <h2 id="servicesTitle">Private services</h2>
+            </div>
+            <button class="secondary-button" id="addServiceButton" type="button">Add service</button>
+          </div>
+          <p class="section-intro">Each service receives a private address on the Home Agent. It is reachable only while the device is connected to Tater Tunnel.</p>
+
+          <form class="inline-form service-form" id="serviceForm" hidden>
+            <label>
+              <span>Preset</span>
+              <select id="servicePreset">
+                <option value="">Custom</option>
+                <option value="tater">Tater</option>
+                <option value="matrix">Matrix</option>
+                <option value="emby">Emby</option>
+              </select>
+            </label>
+            <label>
+              <span>Name</span>
+              <input id="serviceName" type="text" placeholder="tater" required>
+            </label>
+            <label>
+              <span>Local IP or hostname</span>
+              <input id="serviceHost" type="text" value="127.0.0.1" placeholder="10.4.20.204" required>
+            </label>
+            <label>
+              <span>Local port</span>
+              <input id="servicePort" type="number" min="1" max="65535" placeholder="8096" required>
+            </label>
+            <label>
+              <span>Protocol</span>
+              <select id="serviceProtocol">
+                <option value="tcp">TCP</option>
+                <option value="udp">UDP</option>
+              </select>
+            </label>
+            <label>
+              <span>Tunnel port</span>
+              <input id="serviceAccessPort" type="number" min="30000" max="30999" placeholder="Auto">
+            </label>
+            <div class="form-actions">
+              <button class="primary-button" type="submit">Share service</button>
+              <button class="ghost-button" id="cancelServiceButton" type="button">Cancel</button>
+            </div>
+          </form>
+
+          <div class="empty-state" id="emptyServices">
+            <strong>No private services yet</strong>
+            <span>Add only the local apps you want approved devices to reach.</span>
+          </div>
+          <div class="item-list" id="serviceList"></div>
+        </section>
+      </main>
+    </div>
+
+    <script src="qr.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

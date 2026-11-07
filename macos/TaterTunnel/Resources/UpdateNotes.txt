@@ -1,0 +1,1 @@
+Introduces the WireGuard-only Tater Tunnel security model, a bundled macOS packet tunnel, private TCP/UDP service forwarding, a refreshed three-step Home Agent, and a mandatory clean re-pair that removes the retired HTTPS relay state.

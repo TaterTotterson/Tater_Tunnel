@@ -1,0 +1,21 @@
+services:
+  home-agent:
+    image: ghcr.io/tatertotterson/tater-tunnel:latest
+    container_name: tater-tunnel-home
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    network_mode: host
+    environment:
+      TATER_TUNNEL_AGENT: home
+      TATER_TUNNEL_HOST: 127.0.0.1
+      TATER_TUNNEL_WIREGUARD_BACKEND: system
+    volumes:
+      - tater-tunnel-state:/data
+      - tater-tunnel-config:/config
+
+volumes:
+  tater-tunnel-state:
+  tater-tunnel-config:
