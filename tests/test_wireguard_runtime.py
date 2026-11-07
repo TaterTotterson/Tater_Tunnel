@@ -5,9 +5,14 @@ import os
 import subprocess
 import tempfile
 import unittest
+from http import HTTPStatus
 from pathlib import Path
+from unittest.mock import patch
 
-from tater_tunnel.wireguard_runtime import WireGuardSystemRuntime
+from tater_tunnel.config_store import ConfigStore
+from tater_tunnel.home_agent import AgentError, HomeAgentService
+from tater_tunnel.wireguard import KeyPair
+from tater_tunnel.wireguard_runtime import CommandRunner, WireGuardSystemRuntime
 
 
 PRIVATE_KEY = base64.b64encode(b"k" * 32).decode("ascii")
@@ -35,6 +40,72 @@ class RecordingRunner:
 
 
 class WireGuardRuntimeTests(unittest.TestCase):
+    @patch("tater_tunnel.wireguard_runtime.subprocess.run")
+    def test_system_commands_return_a_bounded_timeout(self, run):
+        run.side_effect = subprocess.TimeoutExpired(["wg", "show"], 3)
+
+        completed = CommandRunner().run(["wg", "show"])
+
+        self.assertEqual(completed.returncode, 124)
+        self.assertIn("timed out", completed.stderr)
+
+    def test_health_survives_a_live_diagnostics_timeout(self):
+        class KeyProvider:
+            def generate_keypair(self):
+                return KeyPair(PRIVATE_KEY, HOME_PUBLIC_KEY, "test")
+
+        class VpsClient:
+            def claim(self, base_url, payload):
+                return {
+                    "vpsWireGuard": {
+                        "publicKey": VPS_PUBLIC_KEY,
+                        "address": "10.88.0.1/24",
+                        "network": "10.88.0.0/24",
+                        "homeAllowedIp": "10.88.0.2/32",
+                        "listenPort": 51888,
+                    },
+                    "management": {
+                        "url": "http://10.88.0.1:4174",
+                        "token": "management-secret",
+                    },
+                }
+
+            def health(self, base_url, token):
+                return {"status": "ok", "claimed": True, "peerCount": 0}
+
+            def wireguard(self, base_url, token):
+                raise AgentError(HTTPStatus.BAD_GATEWAY, "VPS diagnostics timed out")
+
+        class HomeRuntime:
+            backend = "test"
+
+            def apply(self, state, endpoint):
+                return {"backend": self.backend, "lastAction": "applied"}
+
+            def reset(self):
+                return {"backend": self.backend, "lastAction": "reset"}
+
+        class AccessManager:
+            def sync(self, routes):
+                return {"listeners": [], "errors": {}}
+
+        with tempfile.TemporaryDirectory() as directory:
+            service = HomeAgentService(
+                ConfigStore(Path(directory) / "home.json"),
+                key_provider=KeyProvider(),
+                vps_client=VpsClient(),
+                wireguard_runtime=HomeRuntime(),
+                access_manager=AccessManager(),
+            )
+            service.pair_vps(
+                {"vpsAddress": "tunnel.example.com", "pairingCode": "RIGHT-CODE"}
+            )
+
+            state = service.check_health()["state"]
+
+        self.assertEqual(state["vpsAgent"]["health"]["status"], "ok")
+        self.assertIn("timed out", state["vpsAgent"]["diagnosticsWarning"])
+
     def test_bootstrap_keeps_its_managed_source_updateable(self):
         root = Path(__file__).parents[1]
         setup = (root / "scripts" / "tater-vps-setup.sh").read_text(encoding="utf-8")

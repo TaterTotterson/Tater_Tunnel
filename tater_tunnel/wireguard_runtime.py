@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import Any
 
 
+SYSTEM_COMMAND_TIMEOUT_SECONDS = 3
+
+
 class WireGuardRuntimeError(Exception):
     pass
 
@@ -28,13 +31,29 @@ class CommandRunner:
         command: list[str],
         input_text: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            input=input_text,
-            text=True,
-        )
+        try:
+            return subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                input=input_text,
+                text=True,
+                timeout=SYSTEM_COMMAND_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as error:
+            stdout = (
+                error.stdout.decode(errors="replace")
+                if isinstance(error.stdout, bytes)
+                else error.stdout or ""
+            )
+            stderr = (
+                error.stderr.decode(errors="replace")
+                if isinstance(error.stderr, bytes)
+                else error.stderr or ""
+            )
+            detail = f"command timed out after {SYSTEM_COMMAND_TIMEOUT_SECONDS} seconds"
+            stderr = f"{stderr.rstrip()}; {detail}" if stderr else detail
+            return subprocess.CompletedProcess(command, 124, stdout, stderr)
 
 
 class WireGuardSystemProbe:

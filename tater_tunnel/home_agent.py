@@ -172,11 +172,16 @@ class HomeAgentService:
 
         checked_at = utc_now()
         health = self.vps_client.health(management_url, management_token)
-        diagnostics = self.vps_client.wireguard(management_url, management_token)
+        diagnostics: dict[str, Any] = {}
+        diagnostics_warning = ""
+        try:
+            diagnostics = self.vps_client.wireguard(management_url, management_token)
+        except AgentError as error:
+            diagnostics_warning = error.message
         live_devices = self._devices_with_live_wireguard(
             state.get("devices", []), diagnostics.get("wireguard") or {}
         )
-        if self._devices_need_peer_sync(live_devices):
+        if diagnostics and self._devices_need_peer_sync(live_devices):
             self._sync_device_peers(state)
             diagnostics = self.vps_client.wireguard(management_url, management_token)
             live_devices = self._devices_with_live_wireguard(
@@ -187,7 +192,11 @@ class HomeAgentService:
         vps_agent = state.setdefault("vpsAgent", {})
         vps_agent["managementUrl"] = management_url
         vps_agent["health"] = self._vps_health_summary(health, checked_at)
-        vps_agent["wireguardRuntime"] = diagnostics.get("wireguard") or {}
+        if diagnostics:
+            vps_agent["wireguardRuntime"] = diagnostics.get("wireguard") or {}
+            vps_agent.pop("diagnosticsWarning", None)
+        elif diagnostics_warning:
+            vps_agent["diagnosticsWarning"] = diagnostics_warning
         state["devices"] = live_devices
         state.setdefault("homeAgent", {})["accessForwarding"] = self.access_manager.sync(
             self.access_routes(state)
@@ -534,7 +543,13 @@ class VpsAgentClient:
         return self._request("GET", base_url, "/api/health", headers=management_headers(token))
 
     def wireguard(self, base_url: str, token: str) -> dict[str, Any]:
-        return self._request("GET", base_url, "/api/wireguard", headers=management_headers(token))
+        return self._request(
+            "GET",
+            base_url,
+            "/api/wireguard",
+            headers=management_headers(token),
+            timeout=2,
+        )
 
     def claim(self, base_url: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", base_url, "/api/claim", payload)
