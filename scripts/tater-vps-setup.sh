@@ -671,15 +671,23 @@ require_bootstrap_packages() {
 }
 
 download_from_git() {
+  local backup_dir
+
   install -d -m 0755 "$(dirname "$SOURCE_DIR")"
 
   if [ -d "$SOURCE_DIR/.git" ]; then
+    if [ -n "$(git -C "$SOURCE_DIR" status --porcelain --untracked-files=all)" ]; then
+      backup_dir="$SOURCE_DIR.backup.$(date +%Y%m%d%H%M%S).$$"
+      mv "$SOURCE_DIR" "$backup_dir"
+      git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$SOURCE_DIR"
+      printf '%sExisting modified source preserved at %s%s\n' "$DIM" "$backup_dir" "$RESET"
+      return
+    fi
     git -C "$SOURCE_DIR" remote set-url origin "$REPO_URL"
     git -C "$SOURCE_DIR" fetch --depth 1 origin "$BRANCH"
     git -C "$SOURCE_DIR" checkout -B "$BRANCH" "origin/$BRANCH"
   elif [ -e "$SOURCE_DIR" ]; then
-    local backup_dir
-    backup_dir="$SOURCE_DIR.backup.$(date +%Y%m%d%H%M%S)"
+    backup_dir="$SOURCE_DIR.backup.$(date +%Y%m%d%H%M%S).$$"
     mv "$SOURCE_DIR" "$backup_dir"
     git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$SOURCE_DIR"
     printf '%sExisting non-git source moved to %s%s\n' "$DIM" "$backup_dir" "$RESET"

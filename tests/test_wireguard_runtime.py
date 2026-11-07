@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import subprocess
 import tempfile
 import unittest
@@ -34,6 +35,14 @@ class RecordingRunner:
 
 
 class WireGuardRuntimeTests(unittest.TestCase):
+    def test_bootstrap_keeps_its_managed_source_updateable(self):
+        root = Path(__file__).parents[1]
+        setup = (root / "scripts" / "tater-vps-setup.sh").read_text(encoding="utf-8")
+
+        self.assertIn("status --porcelain --untracked-files=all", setup)
+        self.assertIn("Existing modified source preserved", setup)
+        self.assertTrue(os.access(root / "scripts" / "audit-vps-security.sh", os.X_OK))
+
     def test_vps_service_allows_only_agent_tcp_and_wireguard_udp(self):
         installer = (
             Path(__file__).parents[1] / "scripts" / "install-vps-agent.sh"
