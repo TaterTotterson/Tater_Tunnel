@@ -1,0 +1,1 @@
+Adds a guided VPS setup with Cloudflare DNS, hardened ZNC WebAdmin, optional SFTPGo, and a total local-storage cap that protects the VPS disk.

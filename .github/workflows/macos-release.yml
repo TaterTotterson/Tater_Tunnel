@@ -135,11 +135,11 @@ jobs:
 
           release_id="$(curl -fsS "${api_headers[@]}" "${api_url}/releases/tags/${tag}" | json_id || true)"
           if [[ -z "${release_id}" ]]; then
-            release_body="$(/usr/bin/python3 -c 'import json, os; print(json.dumps({
+            release_body="$(/usr/bin/python3 -c 'import json, os, pathlib; print(json.dumps({
               "tag_name": os.environ["GITHUB_REF_NAME"],
               "name": "Tater Tunnel " + os.environ["VERSION_LABEL"],
               "prerelease": True,
-              "generate_release_notes": True,
+              "body": pathlib.Path("RELEASE_NOTES.md").read_text(encoding="utf-8"),
             }))')"
             release_id="$(curl -fsS \
               -X POST \

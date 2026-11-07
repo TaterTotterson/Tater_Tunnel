@@ -88,6 +88,7 @@ Use the arrow keys to select:
 - `Blank VPS full install`
 - `Advanced existing VPS install`
 - `Optional ZNC install`
+- `Optional SFTPGo install/update`
 - `Uninstall VPS install`
 - `View setup notes`
 
@@ -118,7 +119,9 @@ front door.
 
 Requirements:
 
-- A DNS `A` record pointed at the VPS, for example `tunnel.example.com`.
+- A dedicated hostname, for example `tunnel.example.com`. Its DNS `A` record
+  can already point at the VPS, or the guided installer can create it through
+  the optional Cloudflare API path.
 - Public ports `80/tcp`, `443/tcp`, and `51888/udp` available.
 - `sudo` access over SSH.
 
@@ -145,6 +148,39 @@ The full installer:
 - Opens `80/tcp`, `443/tcp`, `51888/udp`, and the configured SSH port in UFW.
 - Allows `4174/tcp` only from the WireGuard interface for VPN clients.
 - Keeps `4174/tcp` closed on the public internet.
+- Optionally installs ZNC and SFTPGo during the same guided setup.
+- Optionally creates DNS-only Cloudflare records for the selected service
+  hostnames before Caddy requests its certificate.
+
+### Optional Cloudflare DNS Setup
+
+The blank VPS questionnaire can configure Cloudflare DNS automatically. Create
+an API token limited to the intended zone with only:
+
+- `Zone > Zone > Read`
+- `Zone > DNS > Edit`
+
+The token is entered through a hidden prompt, used only for the current run,
+and never written to disk or passed on the command line. The helper creates or
+updates DNS-only `A` records and asks before replacing a record that points to
+a different address.
+
+Cloudflare assigns nameservers, but changing a domain's authoritative
+nameservers generally happens at the registrar. The helper displays the exact
+assigned nameservers. If the Cloudflare zone is still pending, setup stops
+before installing Caddy so the nameservers can be updated safely. Rerun the
+same setup command after Cloudflare reports the zone as active.
+
+The DNS helper can also be run directly:
+
+```bash
+sudo ./scripts/configure-cloudflare-dns.sh \
+  --zone example.com \
+  --record tunnel.example.com \
+  --record sftp.example.com
+```
+
+It auto-detects the VPS public IPv4 address, or accepts `--ipv4 ADDRESS`.
 
 Pair the Home Agent with:
 
@@ -244,6 +280,19 @@ The installer:
 - Writes a systemd service named `znc-USER.service`.
 - Can run ZNC's interactive `--makeconf` wizard immediately.
 - Can optionally open the selected TCP port in UFW.
+- During a blank VPS install, can expose WebAdmin at a dedicated HTTPS
+  hostname through Caddy. ZNC's web-only backend remains on `127.0.0.1:6698`
+  and is not opened in UFW.
+
+The same DNS-only hostname can serve both purposes: IRC clients connect to
+`znc.example.com:6697`, while browsers open `https://znc.example.com`. Caddy
+handles browser HTTPS on port `443`; the raw IRC connection goes directly to
+ZNC on its configured listener port. Choose SSL when ZNC's config wizard asks
+about the public IRC listener. The installer also protects ZNC web sessions,
+hides the exact ZNC version, and trusts forwarded client addresses only from
+the localhost Caddy proxy. The ZNC username and password created by the wizard
+are used for both IRC clients and WebAdmin; no extra password is generated or
+stored by Tater Tunnel.
 
 Direct command:
 
@@ -259,6 +308,82 @@ sudo systemctl enable --now znc-tater
 ```
 
 Replace `tater` with the sudo user that should own the ZNC config.
+
+## Optional SFTPGo Install
+
+Choose `Optional SFTPGo install/update` to add a managed file-transfer server
+to the VPS. This add-on is independent of the Tater Tunnel service and runs as
+SFTPGo's own restricted system user.
+
+The installer:
+
+- Downloads the current open-source SFTPGo Debian package from its official
+  GitHub release.
+- Verifies the package against the release's published SHA-256 digest.
+- Preserves existing SFTPGo configuration, users, and files when rerun for an
+  update.
+- Enables the `sftpgo` systemd service at boot.
+- Can open `2022/tcp` in UFW for SFTP clients.
+- Keeps `8080/tcp` private by default so the first WebAdmin account is not
+  exposed before it has been configured.
+- Binds WebAdmin to `127.0.0.1`, enables the built-in Defender against repeated
+  failed logins, and hides the exact SFTPGo version.
+- Enforces minimum password strength for new admin and SFTP user passwords.
+- Can cap all default local SFTPGo user data at a selected total size while
+  leaving at least `2 GiB` outside that cap when it is created.
+- Preserves existing users, password hashes, public keys, 2FA settings, and
+  provider data on updates.
+
+Direct command:
+
+```bash
+sudo ./scripts/install-sftpgo.sh \
+  --open-sftp-firewall \
+  --max-storage-gb 20
+```
+
+The total storage cap creates a sparse, fixed-size ext4 filesystem image at
+`/var/lib/sftpgo-storage/tater-data.img` and mounts it persistently at
+`/srv/sftpgo/data` with `nosuid`, `nodev`, and `noexec`. The image consumes
+host storage only as files are written, but it can never grow beyond the
+selected size. The installer checks current free space and requires at least
+`2 GiB` to remain outside the new cap.
+
+The cap applies to the default local storage under `/srv/sftpgo/data`. An
+administrator can still configure external storage or virtual folders at other
+paths, which are outside this cap. Per-user quotas should also be set in
+WebAdmin when individual users need separate limits. SFTPGo's software quota
+counters are useful account controls, while the fixed filesystem is the total
+local-storage backstop.
+
+The installer can enlarge an existing managed image, but it will not shrink
+one automatically. It also refuses to enable the cap over a nonempty existing
+`/srv/sftpgo/data` directory, avoiding any hidden or implicit data migration.
+Back up and migrate an existing installation manually before adding a cap.
+
+From your PC, open an SSH port forward for the initial WebAdmin setup:
+
+```bash
+ssh -L 8080:127.0.0.1:8080 tater@YOUR_VPS
+```
+
+Keep that SSH session open and visit:
+
+```text
+http://127.0.0.1:8080/web/admin
+```
+
+Create the SFTPGo admin and SFTP users there. SFTP clients connect to the VPS
+on port `2022`. SFTPGo stores its configuration under `/etc/sftpgo`, its state
+under `/var/lib/sftpgo`, and local user files under `/srv/sftpgo/data`. Tater's
+update-safe environment overrides are stored in
+`/etc/sftpgo/env.d/tater-tunnel.env`.
+
+Use a unique password for the first administrator and enable TOTP from the
+admin profile after logging in. Prefer SSH public keys for SFTP users when the
+client supports them. The installer deliberately does not create a default
+administrator or save a password in a file, environment variable, or command
+line argument.
 
 ## Uninstall
 
@@ -285,7 +410,9 @@ It asks before deleting:
 - A Caddyfile proxy that points to the Tater VPS Agent.
 
 It does not uninstall shared packages such as Python, Caddy, UFW, WireGuard, or
-WireGuard tools.
+WireGuard tools. Optional ZNC and SFTPGo installations are also left in place
+so their user data is not removed as a side effect of uninstalling Tater
+Tunnel.
 
 Direct uninstall command:
 

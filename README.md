@@ -234,6 +234,12 @@ The blank VPS path will create a sudo user first, print SSH key setup commands
 for your PC, and ask you to reconnect as the new user before installing Tater
 Tunnel. After key login works, disable password login and root SSH login.
 
+During the blank VPS install, ZNC and SFTPGo can be included as optional
+add-ons. Users with Cloudflare DNS can also supply a zone-scoped API token to
+create DNS-only records for the Tater, ZNC, and SFTPGo hostnames. The token is
+used once and is never saved. The DNS helper reports Cloudflare's assigned
+nameservers, but registrar nameserver changes remain a manual step.
+
 Run the same command later to update an existing VPS install. The setup menu
 has an `Update existing install` option that downloads the latest source,
 preserves `/var/lib/tater-tunnel` state, keeps the current service host/port,
@@ -245,7 +251,18 @@ WireGuard config, downloaded source, or Caddy proxy settings.
 
 The menu also includes `Optional ZNC install`. That installs ZNC for the sudo
 user, keeps the ZNC config under that user's home directory, and can run ZNC's
-interactive config wizard.
+interactive config wizard. During a blank VPS install, a ZNC hostname can also
+serve WebAdmin over automatic Caddy HTTPS while the WebAdmin backend remains
+bound to localhost.
+
+`Optional SFTPGo install/update` installs the current open-source SFTPGo
+release, verifies the upstream package digest, and enables it at boot. The
+guided setup opens its SFTP port by default but keeps the WebAdmin port private
+so the first admin account can be created through an SSH port forward. It also
+enables SFTPGo Defender, hides the exact server version, and applies minimum
+password-strength rules without generating or storing credentials. By default,
+the guided installer also offers a total cap for SFTPGo's local user data so a
+file-transfer account cannot consume the VPS's entire root filesystem.
 
 To test a branch or fork, pass the repo explicitly:
 
@@ -293,6 +310,18 @@ To install the optional ZNC add-on directly:
 ```bash
 sudo ./scripts/install-znc.sh --user "$USER" --makeconf
 ```
+
+To install or update the optional SFTPGo add-on directly:
+
+```bash
+sudo ./scripts/install-sftpgo.sh --open-sftp-firewall --max-storage-gb 20
+```
+
+The storage cap is a sparse, fixed-size ext4 filesystem mounted at
+`/srv/sftpgo/data`. It grows on the host only as files are uploaded, persists
+across reboots, and can be enlarged later by rerunning the installer with a
+larger value. The installer does not automatically shrink it or place an
+existing nonempty data directory inside it.
 
 See `docs/VPS_INSTALL.md` for the full setup flow. The full installer keeps the
 VPS Agent on `127.0.0.1:4174`, puts Caddy in front for automatic HTTPS, opens

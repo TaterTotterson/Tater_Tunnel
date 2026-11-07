@@ -172,6 +172,8 @@ write_caddyfile() {
     cp -a "$caddyfile" "$caddyfile.tater-backup-$(date +%Y%m%d%H%M%S)"
   fi
 
+  install -d -m 0755 /etc/caddy/tater-sites
+
   if [ -n "$EMAIL" ]; then
     cat > "$caddyfile" <<EOF
 {
@@ -181,12 +183,16 @@ write_caddyfile() {
 $DOMAIN {
   reverse_proxy 127.0.0.1:$LISTEN_PORT
 }
+
+import tater-sites/*.caddy
 EOF
   else
     cat > "$caddyfile" <<EOF
 $DOMAIN {
   reverse_proxy 127.0.0.1:$LISTEN_PORT
 }
+
+import tater-sites/*.caddy
 EOF
   fi
 

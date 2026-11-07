@@ -6,6 +6,7 @@ PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
 APP_DIR="${PROJECT_DIR}/build/Tater Tunnel.app"
 INFO_PLIST="${PROJECT_DIR}/Resources/Info.plist"
 RELEASES_DIR="${PROJECT_DIR}/releases"
+UPDATE_NOTES_FILE="${PROJECT_DIR}/Resources/UpdateNotes.txt"
 
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${INFO_PLIST}")"
 BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "${INFO_PLIST}")"
@@ -36,6 +37,11 @@ if [ "${TATER_TUNNEL_NOTARIZE:-0}" = "1" ]; then
 fi
 cp "${ZIP_PATH}" "${RELEASE_ZIP_PATH}"
 SHA256="$(shasum -a 256 "${ZIP_PATH}" | awk '{print $1}')"
+UPDATE_NOTES="Tater Tunnel macOS update ${VERSION_LABEL}."
+if [ -f "${UPDATE_NOTES_FILE}" ]; then
+  UPDATE_NOTES="$(tr '\n' ' ' < "${UPDATE_NOTES_FILE}" | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//')"
+fi
+UPDATE_NOTES_JSON="$(printf '%s' "${UPDATE_NOTES}" | /usr/bin/python3 -c 'import json, sys; print(json.dumps(sys.stdin.read()))')"
 
 {
   printf '{\n'
@@ -43,7 +49,7 @@ SHA256="$(shasum -a 256 "${ZIP_PATH}" | awk '{print $1}')"
   printf '  "build": %s,\n' "${BUILD_NUMBER}"
   printf '  "url": "%s",\n' "${DOWNLOAD_URL}"
   printf '  "sha256": "%s",\n' "${SHA256}"
-  printf '  "notes": "Tater Tunnel macOS update %s."\n' "${VERSION_LABEL}"
+  printf '  "notes": %s\n' "${UPDATE_NOTES_JSON}"
   printf '}\n'
 } > "${MANIFEST_PATH}"
 cp "${MANIFEST_PATH}" "${REPO_MANIFEST_PATH}"
