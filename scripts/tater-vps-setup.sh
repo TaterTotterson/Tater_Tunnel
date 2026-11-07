@@ -1056,6 +1056,8 @@ run_full_install() {
   local cloudflare_zone=""
   local cloudflare_ipv4=""
   local cloudflare_args
+  local final_pairing_code
+  local tater_service_status
 
   handle_root_login_for_blank_vps
   require_root_for_install
@@ -1292,6 +1294,24 @@ EOF
       fi
     fi
   fi
+
+  final_pairing_code="$(cat /var/lib/tater-tunnel/pairing-code 2>/dev/null || true)"
+  tater_service_status="$(systemctl is-active tater-tunnel-vps 2>/dev/null || true)"
+  cat <<EOF
+
+${GREEN}${BOLD}Tater Tunnel setup complete.${RESET}
+
+Pair the Home Agent with:
+  VPS URL:      https://$domain
+  Pairing code: ${final_pairing_code:-unavailable; run sudo cat /var/lib/tater-tunnel/pairing-code}
+
+VPS Agent service: ${tater_service_status:-unknown}
+WireGuard port:    51888/udp
+
+Keep this one-time pairing code private. After the Home Agent claims the VPS,
+public pairing closes and management continues inside the WireGuard tunnel.
+
+EOF
 }
 
 run_advanced_install() {

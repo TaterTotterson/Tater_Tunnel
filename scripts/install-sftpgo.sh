@@ -155,6 +155,7 @@ download_verified_package() {
   local package_path
 
   TEMP_DIR="$(mktemp -d /tmp/tater-sftpgo.XXXXXX)"
+  chmod 0755 "$TEMP_DIR"
   api_url="$(release_api_url)"
   architecture="$(package_architecture)"
 
@@ -196,6 +197,7 @@ download_verified_package() {
 
   expected_sha256="${asset_digest#sha256:}"
   printf '%s  %s\n' "$expected_sha256" "$package_path" | sha256sum --check --status
+  chmod 0644 "$package_path"
   echo "Package SHA-256 verified." >&2
   printf '%s' "$package_path"
 }
@@ -347,6 +349,7 @@ configure_storage_cap() {
 
   chmod 0600 "$STORAGE_IMAGE"
   write_storage_fstab_entry
+  systemctl daemon-reload
   if ! mountpoint -q "$STORAGE_MOUNT"; then
     mount "$STORAGE_MOUNT"
   fi
