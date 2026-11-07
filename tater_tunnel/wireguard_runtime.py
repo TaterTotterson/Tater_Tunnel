@@ -23,8 +23,18 @@ class CommandRunner:
     def system(self) -> str:
         return platform.system()
 
-    def run(self, command: list[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(command, check=False, capture_output=True, text=True)
+    def run(
+        self,
+        command: list[str],
+        input_text: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            input=input_text,
+            text=True,
+        )
 
 
 class WireGuardSystemProbe:
@@ -127,19 +137,8 @@ class WireGuardConfigRuntime:
             "message": message,
         }
 
-    def _write_setconf_config(self) -> Path:
-        config = render_wg_setconf_config(self.config_path.read_text(encoding="utf-8"))
-        fd, temp_name = tempfile.mkstemp(
-            prefix=f".{self.config_path.name}.setconf.",
-            suffix=".tmp",
-            dir=self.config_path.parent,
-            text=True,
-        )
-
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(config)
-
-        return Path(temp_name)
+    def _setconf_config(self) -> str:
+        return render_wg_setconf_config(self.config_path.read_text(encoding="utf-8"))
 
     def diagnostics(self, state: dict[str, Any] | None = None) -> dict[str, Any]:
         system = self.probe.inspect(self.interface_name)
@@ -194,15 +193,11 @@ class WireGuardCommandRuntime(WireGuardConfigRuntime):
                 f"interface {self.interface_name} does not exist; use the system backend to create it"
             )
 
-        setconf_path = self._write_setconf_config()
-        try:
-            command = ["wg", "setconf", self.interface_name, str(setconf_path)]
-            completed = self.runner.run(command)
-            if completed.returncode != 0:
-                detail = completed.stderr.strip() or completed.stdout.strip() or "wg setconf failed"
-                raise WireGuardRuntimeError(detail)
-        finally:
-            setconf_path.unlink(missing_ok=True)
+        command = ["wg", "setconf", self.interface_name, "/dev/stdin"]
+        completed = self.runner.run(command, input_text=self._setconf_config())
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip() or "wg setconf failed"
+            raise WireGuardRuntimeError(detail)
 
         result["lastAction"] = "applied"
         result["message"] = "WireGuard config applied with wg setconf"
@@ -226,11 +221,12 @@ class WireGuardSystemRuntime(WireGuardConfigRuntime):
         if not diagnostics["interfaceExists"]:
             commands_run.append(create_wireguard_interface(self.runner, self.interface_name))
 
-        setconf_path = self._write_setconf_config()
-        try:
-            commands_run.append(self._run_system_command(["wg", "setconf", self.interface_name, str(setconf_path)]))
-        finally:
-            setconf_path.unlink(missing_ok=True)
+        commands_run.append(
+            self._run_system_command(
+                ["wg", "setconf", self.interface_name, "/dev/stdin"],
+                input_text=self._setconf_config(),
+            )
+        )
         commands_run.append(self._run_system_command(["ip", "address", "replace", state["interface"]["address"], "dev", self.interface_name]))
         commands_run.append(self._run_system_command(["ip", "link", "set", "up", "dev", self.interface_name]))
 
@@ -263,8 +259,12 @@ class WireGuardSystemRuntime(WireGuardConfigRuntime):
         if not diagnostics["commands"]["ip"]:
             raise WireGuardRuntimeError("ip command is not installed")
 
-    def _run_system_command(self, command: list[str]) -> str:
-        completed = self.runner.run(command)
+    def _run_system_command(self, command: list[str], input_text: str | None = None) -> str:
+        completed = (
+            self.runner.run(command)
+            if input_text is None
+            else self.runner.run(command, input_text=input_text)
+        )
         if completed.returncode != 0:
             detail = completed.stderr.strip() or completed.stdout.strip() or "command failed"
             raise WireGuardRuntimeError(f"{' '.join(command)}: {detail}")
@@ -314,15 +314,11 @@ class WireGuardClientCommandRuntime(WireGuardClientConfigRuntime):
                 f"interface {self.interface_name} does not exist; use the system backend to create it"
             )
 
-        setconf_path = self._write_setconf_config()
-        try:
-            command = ["wg", "setconf", self.interface_name, str(setconf_path)]
-            completed = self.runner.run(command)
-            if completed.returncode != 0:
-                detail = completed.stderr.strip() or completed.stdout.strip() or "wg setconf failed"
-                raise WireGuardRuntimeError(detail)
-        finally:
-            setconf_path.unlink(missing_ok=True)
+        command = ["wg", "setconf", self.interface_name, "/dev/stdin"]
+        completed = self.runner.run(command, input_text=self._setconf_config())
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip() or "wg setconf failed"
+            raise WireGuardRuntimeError(detail)
 
         result["lastAction"] = "applied"
         result["message"] = "Home Agent WireGuard config applied with wg setconf"
@@ -347,11 +343,12 @@ class WireGuardClientSystemRuntime(WireGuardClientConfigRuntime):
         if not diagnostics["interfaceExists"]:
             commands_run.append(create_wireguard_interface(self.runner, self.interface_name))
 
-        setconf_path = self._write_setconf_config()
-        try:
-            commands_run.append(self._run_system_command(["wg", "setconf", self.interface_name, str(setconf_path)]))
-        finally:
-            setconf_path.unlink(missing_ok=True)
+        commands_run.append(
+            self._run_system_command(
+                ["wg", "setconf", self.interface_name, "/dev/stdin"],
+                input_text=self._setconf_config(),
+            )
+        )
         commands_run.append(self._run_system_command(["ip", "address", "replace", address, "dev", self.interface_name]))
         commands_run.append(self._run_system_command(["ip", "link", "set", "up", "dev", self.interface_name]))
 
@@ -384,8 +381,12 @@ class WireGuardClientSystemRuntime(WireGuardClientConfigRuntime):
         if not diagnostics["commands"]["ip"]:
             raise WireGuardRuntimeError("ip command is not installed")
 
-    def _run_system_command(self, command: list[str]) -> str:
-        completed = self.runner.run(command)
+    def _run_system_command(self, command: list[str], input_text: str | None = None) -> str:
+        completed = (
+            self.runner.run(command)
+            if input_text is None
+            else self.runner.run(command, input_text=input_text)
+        )
         if completed.returncode != 0:
             detail = completed.stderr.strip() or completed.stdout.strip() or "command failed"
             raise WireGuardRuntimeError(f"{' '.join(command)}: {detail}")
