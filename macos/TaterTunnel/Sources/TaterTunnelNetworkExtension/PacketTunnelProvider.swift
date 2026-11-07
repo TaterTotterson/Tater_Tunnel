@@ -80,7 +80,11 @@ private enum TaterWireGuardConfiguration {
         var peerValues: [String: String] = [:]
 
         for rawLine in text.split(whereSeparator: \.isNewline) {
-            let line = rawLine.split(separator: "#", maxSplits: 1)[0]
+            let line = rawLine.split(
+                separator: "#",
+                maxSplits: 1,
+                omittingEmptySubsequences: false
+            )[0]
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if line.isEmpty { continue }
             if line == "[Interface]" || line == "[Peer]" {
