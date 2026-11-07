@@ -408,9 +408,7 @@ private final class HomeAgentManager {
             "--wireguard-config",
             wireguardDir.appendingPathComponent("tater-home.conf").path,
             "--wireguard-interface",
-            "tater-home",
-            "--relay-target",
-            "http://127.0.0.1:\(tunnelPort)"
+            "tater-home"
         ]
         process.currentDirectoryURL = sourceRoot
         process.environment = backendEnvironment()
@@ -829,6 +827,8 @@ private final class AppUpdater {
             )
 
             let appBundle = try findAppBundle(in: extractDirectory)
+            try verifyUpdateMetadata(appBundle, manifest: manifest)
+            try verifyUpdateSignature(appBundle)
             return PreparedUpdate(appBundle: appBundle, workDirectory: workDirectory)
         } catch {
             try? FileManager.default.removeItem(at: workDirectory)
@@ -1017,6 +1017,48 @@ private final class AppUpdater {
         return bundleID == "com.tatertotterson.tatertunnel"
     }
 
+    private func verifyUpdateMetadata(_ appBundle: URL, manifest: UpdateManifest) throws {
+        let infoURL = appBundle.appendingPathComponent("Contents/Info.plist")
+        guard
+            let info = NSDictionary(contentsOf: infoURL),
+            let rawVersion = info["CFBundleShortVersionString"] as? String,
+            let rawBuild = info["CFBundleVersion"] as? String,
+            let build = Int(rawBuild)
+        else {
+            throw LauncherError("Downloaded update has incomplete version metadata.")
+        }
+
+        let version = rawVersion.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
+        let manifestVersion = manifest.version.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
+        guard version == manifestVersion, build == manifest.build else {
+            throw LauncherError("Downloaded update version does not match the update manifest.")
+        }
+    }
+
+    private func verifyUpdateSignature(_ appBundle: URL) throws {
+        try runCheckedProcess(
+            executable: "/usr/bin/codesign",
+            arguments: ["--verify", "--deep", "--strict", appBundle.path],
+            currentDirectory: nil
+        )
+
+        let details = try processOutput(
+            executable: "/usr/bin/codesign",
+            arguments: ["-dv", "--verbose=4", appBundle.path]
+        )
+        let fields = Set(
+            details
+                .split(whereSeparator: \.isNewline)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        )
+        guard fields.contains("Identifier=com.tatertotterson.tatertunnel") else {
+            throw LauncherError("Downloaded update has an unexpected app identity.")
+        }
+        guard fields.contains("TeamIdentifier=8BHV7Y2D9D") else {
+            throw LauncherError("Downloaded update is not signed by Tater Totterson AI LLC.")
+        }
+    }
+
     private func loadData(from request: URLRequest) throws -> Data {
         let semaphore = DispatchSemaphore(value: 0)
         var result: Result<Data, Error>?
@@ -1079,6 +1121,22 @@ private final class AppUpdater {
         guard process.terminationStatus == 0 else {
             throw LauncherError("\(executable) exited with status \(process.terminationStatus).")
         }
+    }
+
+    private func processOutput(executable: String, arguments: [String]) throws -> String {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.standardOutput = output
+        process.standardError = output
+        try process.run()
+        process.waitUntilExit()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        guard process.terminationStatus == 0 else {
+            throw LauncherError("\(executable) exited with status \(process.terminationStatus).")
+        }
+        return String(data: data, encoding: .utf8) ?? ""
     }
 }
 

@@ -37,7 +37,7 @@ Run the Home Agent UI/API:
 
 ```bash
 docker run --rm \
-  -p 4173:4173 \
+  -p 127.0.0.1:4173:4173 \
   -v tater-tunnel-home-data:/data \
   -v tater-tunnel-home-config:/config \
   tater-tunnel:local home
@@ -85,7 +85,7 @@ ghcr.io/tatertotterson/tater-tunnel
 Example release image:
 
 ```bash
-docker run --rm -p 4173:4173 ghcr.io/tatertotterson/tater-tunnel:latest home
+docker run --rm -p 127.0.0.1:4173:4173 ghcr.io/tatertotterson/tater-tunnel:latest home
 ```
 
 ## macOS Home Agent App
@@ -326,22 +326,27 @@ existing nonempty data directory inside it.
 See `docs/VPS_INSTALL.md` for the full setup flow. The full installer keeps the
 VPS Agent on `127.0.0.1:4174`, puts Caddy in front for automatic HTTPS, opens
 `80/tcp`, `443/tcp`, and `51888/udp`, and keeps the raw agent port private.
-It also allows WireGuard clients to reach the Home Relay on
-`http://10.88.0.1:4174/relay/`, while keeping `4174/tcp` closed to the public
-internet.
+It also allows enrolled WireGuard clients to reach named Home Relay routes on
+`http://10.88.0.1:4174/relay/NAME/`, while keeping `4174/tcp` closed to the
+public internet. The Home Agent UI and administration API are local-only and
+are never available through `/relay/`.
 
 To expose another local app through the relay, add a named Home Agent route:
 
 ```bash
 python3.11 -m tater_tunnel.home_agent \
-  --host 0.0.0.0 \
+  --host 127.0.0.1 \
   --port 4173 \
-  --relay-target http://127.0.0.1:4173 \
   --relay-route tater=http://127.0.0.1:8000
 ```
 
 Then open `http://10.88.0.1:4174/relay/tater/` from a WireGuard-connected
 phone. Replace `8000` with the main Tater app's local port.
+
+Relay requests are accepted only when the connection comes directly from an
+IP assigned to an active WireGuard peer. The public HTTPS hostname rejects
+`/relay` paths, and the VPS Agent applies the same restriction independently
+so a reverse-proxy mistake cannot expose local routes.
 
 ## Open The Static Prototype
 

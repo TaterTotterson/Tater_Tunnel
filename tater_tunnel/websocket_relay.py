@@ -7,6 +7,7 @@ from typing import Any
 
 
 WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+MAX_WEBSOCKET_FRAME_BYTES = 4 * 1024 * 1024
 OPCODE_CONTINUATION = 0x0
 OPCODE_TEXT = 0x1
 OPCODE_BINARY = 0x2
@@ -40,7 +41,11 @@ def recv_exact(sock: Any, length: int) -> bytes:
     return b"".join(chunks)
 
 
-def read_frame(sock: Any, masked: bool | None = None) -> dict[str, Any]:
+def read_frame(
+    sock: Any,
+    masked: bool | None = None,
+    max_payload_bytes: int = MAX_WEBSOCKET_FRAME_BYTES,
+) -> dict[str, Any]:
     first, second = recv_exact(sock, 2)
     fin = bool(first & 0x80)
     opcode = first & 0x0F
@@ -55,6 +60,9 @@ def read_frame(sock: Any, masked: bool | None = None) -> dict[str, Any]:
         length = int.from_bytes(recv_exact(sock, 2), "big")
     elif length == 127:
         length = int.from_bytes(recv_exact(sock, 8), "big")
+
+    if length > max_payload_bytes:
+        raise WebSocketProtocolError("WebSocket frame is too large")
 
     mask_key = recv_exact(sock, 4) if has_mask else b""
     payload = recv_exact(sock, length) if length else b""
@@ -90,16 +98,25 @@ def write_frame(sock: Any, opcode: int, payload: bytes = b"", fin: bool = True, 
 
 
 def frame_to_payload(frame: dict[str, Any]) -> dict[str, Any]:
+    body = frame.get("payload") or b""
+    if len(body) > MAX_WEBSOCKET_FRAME_BYTES:
+        raise WebSocketProtocolError("WebSocket frame is too large")
     return {
         "fin": bool(frame.get("fin", True)),
         "opcode": int(frame.get("opcode", OPCODE_BINARY)),
-        "bodyBase64": base64.b64encode(frame.get("payload") or b"").decode("ascii"),
+        "bodyBase64": base64.b64encode(body).decode("ascii"),
     }
 
 
 def payload_to_frame(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        body = base64.b64decode(str(payload.get("bodyBase64") or "").encode("ascii"), validate=True)
+    except (ValueError, TypeError) as error:
+        raise WebSocketProtocolError("WebSocket frame body is not valid base64") from error
+    if len(body) > MAX_WEBSOCKET_FRAME_BYTES:
+        raise WebSocketProtocolError("WebSocket frame is too large")
     return {
         "fin": bool(payload.get("fin", True)),
         "opcode": int(payload.get("opcode", OPCODE_BINARY)),
-        "payload": base64.b64decode(str(payload.get("bodyBase64") or "").encode("ascii")),
+        "payload": body,
     }

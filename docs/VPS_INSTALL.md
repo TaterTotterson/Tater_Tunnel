@@ -144,7 +144,8 @@ The full installer:
 - Installs the VPS Agent as `tater-tunnel-vps`.
 - Runs the VPS Agent for localhost/Caddy and WireGuard clients.
 - Installs Caddy as the public HTTPS reverse proxy.
-- Writes a Caddy route from `https://tunnel.example.com` to `127.0.0.1:4174`.
+- Writes a Caddy route from `https://tunnel.example.com` to `127.0.0.1:4174`
+  while explicitly rejecting public `/relay` paths.
 - Opens `80/tcp`, `443/tcp`, `51888/udp`, and the configured SSH port in UFW.
 - Allows `4174/tcp` only from the WireGuard interface for VPN clients.
 - Keeps `4174/tcp` closed on the public internet.
@@ -192,27 +193,21 @@ Pairing Code: shown by the installer
 Opening `https://tunnel.example.com/` in a browser shows a small Tater Tunnel
 status page. API and pairing endpoints remain under `/api/*`.
 
-After a phone connects to the WireGuard profile, the local Tater app relay is:
+After a phone connects to the WireGuard profile, named local app routes use:
 
 ```text
-http://10.88.0.1:4174/relay/
+http://10.88.0.1:4174/relay/ROUTE_NAME/
 ```
 
-For example, the Home Agent API state route is:
+The bare `/relay/` path deliberately returns `404`; the Home Agent UI and its
+administration API are local-only. They cannot be added as relay routes.
 
-```text
-http://10.88.0.1:4174/relay/api/state
-```
-
-By default, `/relay/` points at the Home Agent / Tunnel UI. To add the main
-Tater app as a named route, start the Home Agent with a route for the app's
-local URL:
+For example, add the main Tater app as a named route for its local URL:
 
 ```bash
 python3.11 -m tater_tunnel.home_agent \
-  --host 0.0.0.0 \
+  --host 127.0.0.1 \
   --port 4173 \
-  --relay-target http://127.0.0.1:4173 \
   --relay-route tater=http://127.0.0.1:8000
 ```
 
@@ -255,9 +250,19 @@ Example Caddy route for an existing Caddy setup:
 
 ```caddyfile
 tunnel.example.com {
-  reverse_proxy 127.0.0.1:4174
+  @public_relay path /relay /relay/*
+  handle @public_relay {
+    respond 404
+  }
+
+  handle {
+    reverse_proxy 127.0.0.1:4174
+  }
 }
 ```
+
+The VPS Agent also verifies the socket source of every relay request against
+its active WireGuard peers. Do not add a public proxy exception for `/relay`.
 
 Then pair the Home Agent with:
 

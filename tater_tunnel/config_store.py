@@ -76,4 +76,16 @@ class ConfigStore:
         merged.update({key: value for key, value in state.items() if key not in {"routes", "homeAgent"}})
         merged["routes"].update(state.get("routes", {}))
         merged["homeAgent"].update(state.get("homeAgent", {}))
+        relay = merged["homeAgent"].get("relay")
+        if isinstance(relay, dict):
+            relay.pop("target", None)
+            routes = relay.get("routes")
+            if isinstance(routes, dict):
+                routes.pop("tunnel", None)
+            settings = relay.get("routeSettings")
+            if isinstance(settings, dict):
+                settings.pop("tunnel", None)
+        for device in merged.get("devices", []):
+            if isinstance(device, dict):
+                device.pop("token", None)
         return merged

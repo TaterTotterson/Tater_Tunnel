@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import ipaddress
 import json
 import os
 import re
@@ -26,6 +27,7 @@ from .websocket_relay import (
     OPCODE_CONTINUATION,
     OPCODE_PING,
     OPCODE_PONG,
+    WebSocketProtocolError,
     frame_to_payload,
     payload_to_frame,
     read_frame,
@@ -41,6 +43,16 @@ VALID_MODES = {"minimal", "safe", "lockdown"}
 RELAY_POLL_TIMEOUT_SECONDS = 20
 RELAY_REQUEST_TIMEOUT_SECONDS = 75
 RELAY_MAX_BODY_BYTES = 2 * 1024 * 1024
+API_MAX_BODY_BYTES = 64 * 1024
+RELAY_CONTROL_MAX_BODY_BYTES = 64 * 1024 * 1024
+MAX_RELAY_PENDING_REQUESTS = 128
+MAX_WEBSOCKET_SESSIONS = 64
+MAX_WEBSOCKET_QUEUE_BYTES = 16 * 1024 * 1024
+MAX_WEBSOCKET_QUEUE_FRAMES = 512
+PAIRING_FAILURE_LIMIT = 8
+PAIRING_FAILURE_WINDOW_SECONDS = 5 * 60
+MAX_TRACKED_PAIRING_ADDRESSES = 1024
+REQUEST_SOCKET_TIMEOUT_SECONDS = 30
 WEBSOCKET_BINARY_CLIENT_FRAME_COALESCE_SECONDS = 0.1
 LANDING_MASCOT_PATH = PROJECT_ROOT / "assets" / "tater-vps-mascot.png"
 LANDING_PAGE_HTML = """<!doctype html>
@@ -159,6 +171,8 @@ class WebSocketRelaySession:
         self._condition = threading.Condition()
         self._client_frames: list[dict[str, Any]] = []
         self._server_frames: list[dict[str, Any]] = []
+        self._client_queue_bytes = 0
+        self._server_queue_bytes = 0
         self.closed = False
 
     def close(self) -> None:
@@ -183,9 +197,22 @@ class WebSocketRelaySession:
         return self._poll(self._server_frames, timeout)
 
     def _push(self, queue: list[dict[str, Any]], frame: dict[str, Any]) -> None:
+        frame_bytes = len(str(frame.get("bodyBase64") or ""))
         with self._condition:
-            if not self.closed:
-                queue.append(frame)
+            if self.closed:
+                return
+
+            queued_bytes = self._client_queue_bytes if queue is self._client_frames else self._server_queue_bytes
+            if len(queue) >= MAX_WEBSOCKET_QUEUE_FRAMES or queued_bytes + frame_bytes > MAX_WEBSOCKET_QUEUE_BYTES:
+                self.closed = True
+                self._condition.notify_all()
+                raise VpsAgentError(HTTPStatus.SERVICE_UNAVAILABLE, "WebSocket relay queue limit reached")
+
+            queue.append(frame)
+            if queue is self._client_frames:
+                self._client_queue_bytes += frame_bytes
+            else:
+                self._server_queue_bytes += frame_bytes
             self._condition.notify_all()
 
     def _poll(
@@ -218,6 +245,10 @@ class WebSocketRelaySession:
 
             frames = list(queue)
             queue.clear()
+            if queue is self._client_frames:
+                self._client_queue_bytes = 0
+            else:
+                self._server_queue_bytes = 0
             return {
                 "frames": frames,
                 "closed": self.closed and not queue,
@@ -236,6 +267,8 @@ class RelayBroker:
         deadline = time.monotonic() + timeout
 
         with self._condition:
+            if len(self._requests) >= MAX_RELAY_PENDING_REQUESTS:
+                raise VpsAgentError(HTTPStatus.SERVICE_UNAVAILABLE, "Home Relay is busy")
             self._requests[request_id] = {
                 "request": relay_request,
                 "response": None,
@@ -287,6 +320,8 @@ class RelayBroker:
     def create_websocket_session(self) -> WebSocketRelaySession:
         session = WebSocketRelaySession(secrets.token_urlsafe(18))
         with self._condition:
+            if len(self._websocket_sessions) >= MAX_WEBSOCKET_SESSIONS:
+                raise VpsAgentError(HTTPStatus.SERVICE_UNAVAILABLE, "WebSocket relay session limit reached")
             self._websocket_sessions[session.id] = session
         return session
 
@@ -380,7 +415,7 @@ class VpsConfigStore:
         state = self.load()
         state["pairing"]["enabled"] = True
         state["pairing"]["claimedAt"] = ""
-        state["pairing"]["code"] = pairing_code or state["pairing"].get("code") or create_pairing_code()
+        state["pairing"]["code"] = pairing_code or create_pairing_code()
         return self.save(state)
 
     def _merge_defaults(self, state: dict[str, Any]) -> dict[str, Any]:
@@ -405,6 +440,7 @@ class VpsAgentService:
         key_provider: WireGuardKeyProvider | None = None,
         wireguard_runtime: Any | None = None,
         relay_broker: RelayBroker | None = None,
+        allow_loopback_relay: bool = False,
     ):
         self.store = store
         self.key_provider = key_provider or WireGuardKeyProvider()
@@ -414,6 +450,9 @@ class VpsAgentService:
             "tater0",
         )
         self.relay_broker = relay_broker or RelayBroker()
+        self.allow_loopback_relay = allow_loopback_relay
+        self._pairing_failures: dict[str, list[float]] = {}
+        self._pairing_failure_lock = threading.Lock()
 
     def state(self) -> dict[str, Any]:
         return self._public_state(self.store.load())
@@ -448,7 +487,9 @@ class VpsAgentService:
 
         if not state["pairing"]["enabled"]:
             raise VpsAgentError(HTTPStatus.CONFLICT, "Pairing mode is disabled")
-        if pairing_code != state["pairing"]["code"]:
+        self._check_pairing_rate_limit(remote_address)
+        if not secrets.compare_digest(pairing_code, str(state["pairing"]["code"])):
+            self._record_pairing_failure(remote_address)
             raise VpsAgentError(HTTPStatus.FORBIDDEN, "Pairing code is not valid")
         if mode not in VALID_MODES:
             raise VpsAgentError(HTTPStatus.BAD_REQUEST, "Security mode must be minimal, safe, or lockdown")
@@ -476,6 +517,8 @@ class VpsAgentService:
         if home_public_key:
             state["homeAgent"]["publicKey"] = home_public_key
             state["homeAgent"]["allowedIp"] = "10.88.0.2/32"
+
+        self._clear_pairing_failures(remote_address)
 
         self._apply_wireguard(state)
         saved = self.store.save(state)
@@ -568,9 +611,11 @@ class VpsAgentService:
         path: str,
         headers: dict[str, str],
         body: bytes,
+        remote_address: str = "",
         timeout: float = RELAY_REQUEST_TIMEOUT_SECONDS,
     ) -> dict[str, Any]:
         state = self.store.load()
+        self._require_relay_client(state, remote_address)
         self._require_claimed(state)
         if (state.get("homeAgent") or {}).get("transport") != "relay":
             raise VpsAgentError(HTTPStatus.CONFLICT, "Home Agent is not using relay transport")
@@ -579,7 +624,7 @@ class VpsAgentService:
             "id": secrets.token_urlsafe(18),
             "method": method.upper(),
             "path": path or "/",
-            "headers": sanitize_headers(headers),
+            "headers": self._relay_request_headers(headers, remote_address),
             "bodyBase64": base64.b64encode(body).decode("ascii"),
             "receivedAt": utc_now(),
         }
@@ -589,9 +634,11 @@ class VpsAgentService:
         self,
         path: str,
         headers: dict[str, str],
+        remote_address: str = "",
         timeout: float = 10,
     ) -> tuple[WebSocketRelaySession, dict[str, Any]]:
         state = self.store.load()
+        self._require_relay_client(state, remote_address)
         self._require_claimed(state)
         if (state.get("homeAgent") or {}).get("transport") != "relay":
             raise VpsAgentError(HTTPStatus.CONFLICT, "Home Agent is not using relay transport")
@@ -602,7 +649,7 @@ class VpsAgentService:
             "sessionId": session.id,
             "method": "WEBSOCKET",
             "path": path or "/",
-            "headers": sanitize_headers(headers),
+            "headers": self._relay_request_headers(headers, remote_address),
             "bodyBase64": "",
             "receivedAt": utc_now(),
         }
@@ -661,6 +708,10 @@ class VpsAgentService:
         for frame in frames:
             if not isinstance(frame, dict):
                 raise VpsAgentError(HTTPStatus.BAD_REQUEST, "WebSocket frame must be an object")
+            try:
+                payload_to_frame(frame)
+            except WebSocketProtocolError as error:
+                raise VpsAgentError(HTTPStatus.BAD_REQUEST, str(error)) from error
             session.push_server_frame(frame)
             if int(frame.get("opcode") or 0) == OPCODE_CLOSE:
                 session.close()
@@ -676,6 +727,9 @@ class VpsAgentService:
     def require_management_token(self, token: str) -> None:
         self._require_relay_token(token)
 
+    def require_relay_client(self, remote_address: str) -> None:
+        self._require_relay_client(self.store.load(), remote_address)
+
     def _require_claimed(self, state: dict[str, Any]) -> None:
         if not state["claimed"]:
             raise VpsAgentError(HTTPStatus.CONFLICT, "VPS Agent is not claimed")
@@ -686,6 +740,90 @@ class VpsAgentService:
         relay_token = str((state.get("homeAgent") or {}).get("relayToken") or "")
         if not relay_token or not secrets.compare_digest(relay_token, str(token or "")):
             raise VpsAgentError(HTTPStatus.FORBIDDEN, "Home Relay token is not valid")
+
+    def _require_relay_client(self, state: dict[str, Any], remote_address: str) -> None:
+        try:
+            client_ip = ipaddress.ip_address(str(remote_address or ""))
+        except ValueError as error:
+            raise VpsAgentError(HTTPStatus.FORBIDDEN, "Relay access requires an approved WireGuard device") from error
+
+        if self.allow_loopback_relay and client_ip.is_loopback:
+            return
+
+        for peer in state.get("peers", []):
+            if str(peer.get("status") or "active").lower() != "active":
+                continue
+            try:
+                allowed_network = ipaddress.ip_network(str(peer.get("allowedIp") or ""), strict=False)
+            except ValueError:
+                continue
+            if client_ip in allowed_network:
+                return
+
+        raise VpsAgentError(HTTPStatus.FORBIDDEN, "Relay access requires an approved WireGuard device")
+
+    def _check_pairing_rate_limit(self, remote_address: str) -> None:
+        address = str(remote_address or "unknown")
+        now = time.monotonic()
+        with self._pairing_failure_lock:
+            for tracked_address, attempts in list(self._pairing_failures.items()):
+                recent_attempts = [
+                    attempted_at
+                    for attempted_at in attempts
+                    if now - attempted_at < PAIRING_FAILURE_WINDOW_SECONDS
+                ]
+                if recent_attempts:
+                    self._pairing_failures[tracked_address] = recent_attempts
+                else:
+                    self._pairing_failures.pop(tracked_address, None)
+
+            while (
+                address not in self._pairing_failures
+                and len(self._pairing_failures) >= MAX_TRACKED_PAIRING_ADDRESSES
+            ):
+                self._pairing_failures.pop(next(iter(self._pairing_failures)))
+
+            recent = [
+                attempted_at
+                for attempted_at in self._pairing_failures.get(address, [])
+                if now - attempted_at < PAIRING_FAILURE_WINDOW_SECONDS
+            ]
+            self._pairing_failures[address] = recent
+            if len(recent) >= PAIRING_FAILURE_LIMIT:
+                raise VpsAgentError(HTTPStatus.TOO_MANY_REQUESTS, "Too many pairing attempts; try again later")
+
+    def _record_pairing_failure(self, remote_address: str) -> None:
+        address = str(remote_address or "unknown")
+        with self._pairing_failure_lock:
+            self._pairing_failures.setdefault(address, []).append(time.monotonic())
+
+    def _clear_pairing_failures(self, remote_address: str) -> None:
+        with self._pairing_failure_lock:
+            self._pairing_failures.pop(str(remote_address or "unknown"), None)
+
+    def _relay_request_headers(self, headers: dict[str, Any], remote_address: str) -> dict[str, str]:
+        forwarded = {
+            name: value
+            for name, value in sanitize_headers(headers).items()
+            if name.lower()
+            not in {
+                "forwarded",
+                "x-forwarded-for",
+                "x-forwarded-host",
+                "x-forwarded-prefix",
+                "x-forwarded-proto",
+                "x-original-uri",
+                "x-script-name",
+                "x-tater-management-token",
+                "x-tater-relay-token",
+            }
+        }
+        original_host = header_value(headers, "Host")
+        if original_host:
+            forwarded["X-Forwarded-Host"] = original_host
+        forwarded["X-Forwarded-For"] = str(remote_address)
+        forwarded["X-Forwarded-Proto"] = "http"
+        return forwarded
 
     def _apply_wireguard(self, state: dict[str, Any]) -> None:
         try:
@@ -721,6 +859,12 @@ class VpsAgentServer(ThreadingHTTPServer):
 class VpsAgentHandler(BaseHTTPRequestHandler):
     server: VpsAgentServer
     protocol_version = "HTTP/1.1"
+    server_version = "TaterTunnel"
+    sys_version = ""
+
+    def setup(self) -> None:
+        super().setup()
+        self.connection.settimeout(REQUEST_SOCKET_TIMEOUT_SECONDS)
 
     def do_GET(self) -> None:
         try:
@@ -742,7 +886,7 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
                 self._handle_relay_poll()
             elif path.startswith("/api/relay/ws/"):
                 self._handle_websocket_frame_poll(path)
-            elif path.startswith("/relay"):
+            elif is_relay_path(path):
                 self._handle_public_relay("GET", parsed)
             else:
                 self._send_error(HTTPStatus.NOT_FOUND, "Endpoint not found")
@@ -759,7 +903,7 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
         if parsed.path == "/assets/tater-vps-mascot.png":
             self._send_static_png(LANDING_MASCOT_PATH)
             return
-        if parsed.path.startswith("/relay"):
+        if is_relay_path(parsed.path):
             self._handle_public_relay("HEAD", parsed)
             return
 
@@ -767,19 +911,29 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
-        if path.startswith("/relay"):
+        if is_relay_path(path):
             self._handle_public_relay("POST", urlparse(self.path))
             return
 
         try:
-            payload = self._read_json()
+            known_path = (
+                path in {"/api/claim", "/api/peers", "/api/reset"}
+                or path.startswith("/api/relay/responses/")
+                or path.startswith("/api/relay/ws/")
+            )
+            if not known_path:
+                self.close_connection = True
+                self._send_error(HTTPStatus.NOT_FOUND, "Endpoint not found")
+                return
+            if path != "/api/claim":
+                self.server.service.require_management_token(self._management_token())
+
+            payload = self._read_json(json_body_limit(path))
             if path == "/api/claim":
                 self._send_json(self.server.service.claim(payload, self.client_address[0]))
             elif path == "/api/peers":
-                self.server.service.require_management_token(self._management_token())
                 self._send_json(self.server.service.add_peer(payload), HTTPStatus.CREATED)
             elif path == "/api/reset":
-                self.server.service.require_management_token(self._management_token())
                 self._send_json(self.server.service.reset())
             elif path.startswith("/api/relay/responses/"):
                 request_id = unquote(path.removeprefix("/api/relay/responses/"))
@@ -790,21 +944,33 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
             else:
                 self._send_error(HTTPStatus.NOT_FOUND, "Endpoint not found")
         except VpsAgentError as error:
+            self.close_connection = True
             self._send_error(error.status, error.message)
         except json.JSONDecodeError:
+            self.close_connection = True
             self._send_error(HTTPStatus.BAD_REQUEST, "Request body must be valid JSON")
         except Exception as error:
             self._send_unexpected_error(error)
 
     def do_PUT(self) -> None:
-        self._handle_public_relay("PUT", urlparse(self.path))
+        parsed = urlparse(self.path)
+        if not is_relay_path(parsed.path):
+            self.close_connection = True
+            self._send_error(HTTPStatus.NOT_FOUND, "Endpoint not found")
+            return
+        self._handle_public_relay("PUT", parsed)
 
     def do_PATCH(self) -> None:
-        self._handle_public_relay("PATCH", urlparse(self.path))
+        parsed = urlparse(self.path)
+        if not is_relay_path(parsed.path):
+            self.close_connection = True
+            self._send_error(HTTPStatus.NOT_FOUND, "Endpoint not found")
+            return
+        self._handle_public_relay("PATCH", parsed)
 
     def do_OPTIONS(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path.startswith("/relay"):
+        if is_relay_path(parsed.path):
             self._handle_public_relay("OPTIONS", parsed)
             return
 
@@ -815,7 +981,7 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         path = urlparse(self.path).path
-        if path.startswith("/relay"):
+        if is_relay_path(path):
             self._handle_public_relay("DELETE", urlparse(self.path))
             return
 
@@ -829,22 +995,34 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
             self.server.service.require_management_token(self._management_token())
             self._send_json(self.server.service.remove_peer(peer_id))
         except VpsAgentError as error:
+            self.close_connection = True
             self._send_error(error.status, error.message)
         except Exception as error:
             self._send_unexpected_error(error)
 
     def log_message(self, format: str, *args: Any) -> None:
-        print(f"{self.address_string()} - {format % args}")
+        status = args[1] if len(args) > 1 else "-"
+        size = args[2] if len(args) > 2 else "-"
+        safe_path = urlparse(self.path).path or "/"
+        print(f'{self.client_address[0]} - "{self.command} {safe_path} {self.request_version}" {status} {size}')
 
-    def _read_json(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length", "0"))
+    def _read_json(self, max_bytes: int = API_MAX_BODY_BYTES) -> dict[str, Any]:
+        if self.headers.get("Transfer-Encoding"):
+            raise VpsAgentError(HTTPStatus.BAD_REQUEST, "Transfer-Encoding is not supported")
+        if self.headers.get_content_type() != "application/json":
+            raise VpsAgentError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "API requests must use application/json")
+        length = parse_content_length(self.headers.get("Content-Length", "0"))
+        if length > max_bytes:
+            raise VpsAgentError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Request body is too large")
         if length == 0:
             return {}
         body = self.rfile.read(length)
         return json.loads(body.decode("utf-8"))
 
     def _read_body(self) -> bytes:
-        length = int(self.headers.get("Content-Length", "0"))
+        if self.headers.get("Transfer-Encoding"):
+            raise VpsAgentError(HTTPStatus.BAD_REQUEST, "Transfer-Encoding is not supported")
+        length = parse_content_length(self.headers.get("Content-Length", "0"))
         if length > RELAY_MAX_BODY_BYTES:
             raise VpsAgentError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Relay request body is too large")
         if length == 0:
@@ -872,6 +1050,7 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
 
     def _handle_public_relay(self, method: str, parsed: Any) -> None:
         try:
+            self.server.service.require_relay_client(self.client_address[0])
             if is_websocket_upgrade(dict(self.headers.items())):
                 self._handle_public_websocket_relay(parsed)
                 return
@@ -884,9 +1063,11 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
                 path,
                 dict(self.headers.items()),
                 self._read_body(),
+                remote_address=self.client_address[0],
             )
             self._send_relay_response(response)
         except VpsAgentError as error:
+            self.close_connection = True
             self._send_error(error.status, error.message)
         except Exception as error:
             self._send_unexpected_error(error)
@@ -926,7 +1107,11 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
         if parsed.query:
             path = f"{path}?{parsed.query}"
 
-        session, response = self.server.service.open_websocket_relay(path, headers)
+        session, response = self.server.service.open_websocket_relay(
+            path,
+            headers,
+            remote_address=self.client_address[0],
+        )
         status = int(response.get("status") or HTTPStatus.BAD_GATEWAY)
         if status != HTTPStatus.SWITCHING_PROTOCOLS:
             self.server.service.close_websocket_relay(session.id)
@@ -943,6 +1128,7 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
             self.send_header("Sec-WebSocket-Protocol", protocol)
         self.end_headers()
         self.close_connection = True
+        self.connection.settimeout(None)
         self._bridge_public_websocket(session)
 
     def _bridge_public_websocket(self, session: WebSocketRelaySession) -> None:
@@ -1014,6 +1200,8 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
         body = json.dumps(payload, sort_keys=True).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -1026,6 +1214,13 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+        )
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if self.command != "HEAD":
@@ -1041,6 +1236,7 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "image/png")
         self.send_header("Cache-Control", "public, max-age=86400")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if self.command != "HEAD":
@@ -1049,14 +1245,34 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
     def _send_unexpected_error(self, error: Exception) -> None:
         print("VPS Agent unexpected error:")
         traceback.print_exception(type(error), error, error.__traceback__)
-        self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, f"VPS Agent internal error: {error}")
+        self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "VPS Agent internal error")
 
 
 def create_pairing_code() -> str:
     alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-    left = "".join(secrets.choice(alphabet) for _ in range(4))
-    right = "".join(secrets.choice(alphabet) for _ in range(4))
+    left = "".join(secrets.choice(alphabet) for _ in range(5))
+    right = "".join(secrets.choice(alphabet) for _ in range(5))
     return f"{left}-{right}"
+
+
+def is_relay_path(path: str) -> bool:
+    return path == "/relay" or path.startswith("/relay/")
+
+
+def parse_content_length(value: Any) -> int:
+    try:
+        length = int(str(value or "0"))
+    except (TypeError, ValueError) as error:
+        raise VpsAgentError(HTTPStatus.BAD_REQUEST, "Content-Length must be a number") from error
+    if length < 0:
+        raise VpsAgentError(HTTPStatus.BAD_REQUEST, "Content-Length cannot be negative")
+    return length
+
+
+def json_body_limit(path: str) -> int:
+    if path.startswith("/api/relay/responses/") or path.startswith("/api/relay/ws/"):
+        return RELAY_CONTROL_MAX_BODY_BYTES
+    return API_MAX_BODY_BYTES
 
 
 def sanitize_headers(headers: dict[str, Any]) -> dict[str, str]:
@@ -1232,10 +1448,15 @@ def build_server(
     wireguard_backend: str = "config",
     wireguard_config: Path = WIREGUARD_CONFIG_PATH,
     wireguard_interface: str = "tater0",
+    allow_loopback_relay: bool = False,
 ) -> VpsAgentServer:
     store = VpsConfigStore(state_file, pairing_code)
     runtime = build_wireguard_runtime(wireguard_backend, wireguard_config, wireguard_interface)
-    service = VpsAgentService(store, wireguard_runtime=runtime)
+    service = VpsAgentService(
+        store,
+        wireguard_runtime=runtime,
+        allow_loopback_relay=allow_loopback_relay,
+    )
     return VpsAgentServer((host, port), service)
 
 
@@ -1254,6 +1475,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--wireguard-backend", choices=["config", "wg", "system"], default="config")
     parser.add_argument("--wireguard-config", default=WIREGUARD_CONFIG_PATH, type=Path)
     parser.add_argument("--wireguard-interface", default="tater0")
+    parser.add_argument(
+        "--allow-loopback-relay",
+        action="store_true",
+        help="Development only: allow /relay requests from loopback instead of an enrolled WireGuard peer.",
+    )
     args = parser.parse_args(argv)
 
     if args.pairing_code and args.pairing_code_file:
@@ -1267,7 +1493,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.reopen_pairing:
         store = VpsConfigStore(args.state_file, pairing_code)
-        state = store.reopen_pairing(pairing_code)
+        state = store.reopen_pairing(args.pairing_code)
+        if args.pairing_code_file:
+            args.pairing_code_file.write_text(f"{state['pairing']['code']}\n", encoding="utf-8")
+            os.chmod(args.pairing_code_file, 0o600)
         print(f"State file: {args.state_file}")
         print(f"Pairing code: {state['pairing']['code']}")
         print("Pairing mode: enabled")
@@ -1282,6 +1511,7 @@ def main(argv: list[str] | None = None) -> int:
         args.wireguard_backend,
         args.wireguard_config,
         args.wireguard_interface,
+        args.allow_loopback_relay,
     )
     state = server.service.state()
     print(f"Tater Tunnel VPS Agent listening on http://{args.host}:{args.port}")

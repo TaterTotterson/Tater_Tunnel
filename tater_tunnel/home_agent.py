@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import argparse
 import base64
+import ipaddress
 import json
 import mimetypes
 import re
-import secrets
 import socket
 import ssl
 import threading
@@ -16,6 +16,7 @@ import urllib.error
 import urllib.request
 from copy import deepcopy
 from datetime import datetime, timezone
+from functools import lru_cache
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -47,6 +48,8 @@ VALID_DEVICE_TYPES = {"Phone", "Laptop", "Tablet", "Desktop"}
 RELAY_POLL_INTERVAL_SECONDS = 1.0
 RELAY_PROXY_TIMEOUT_SECONDS = 15
 MAX_ROUTE_TIMEOUT_SECONDS = 70
+API_MAX_BODY_BYTES = 64 * 1024
+REQUEST_SOCKET_TIMEOUT_SECONDS = 30
 DEFAULT_RELAY_WORKERS = 6
 DEFAULT_ROUTE_ROOT_PATH_PREFIXES = {
     "matrix": ("/_matrix", "/_synapse", "/.well-known"),
@@ -106,14 +109,14 @@ class HomeAgentService:
         key_provider: WireGuardKeyProvider | None = None,
         vps_client: "VpsAgentClient | None" = None,
         wireguard_runtime: Any | None = None,
-        relay_target: str = "http://127.0.0.1:4173",
+        admin_port: int = 4173,
         relay_routes: dict[str, str] | None = None,
     ):
         self.store = store
         self.key_provider = key_provider or WireGuardKeyProvider()
         self.vps_client = vps_client or VpsAgentClient()
-        self.relay_target = relay_target.rstrip("/") or "http://127.0.0.1:4173"
-        self.relay_routes = normalize_relay_routes(self.relay_target, relay_routes or {})
+        self.admin_port = admin_port
+        self.relay_routes = normalize_relay_routes(self.admin_port, relay_routes or {})
         self.wireguard_runtime = wireguard_runtime or build_wireguard_client_runtime(
             "config",
             WIREGUARD_CONFIG_PATH,
@@ -166,7 +169,6 @@ class HomeAgentService:
             "status": "connected",
             "transport": "tls-reverse-tunnel",
             "managementUrl": management_url,
-            "target": self.relay_target,
             "routes": self._current_relay_routes(state),
             "pairedAt": now,
         }
@@ -274,7 +276,6 @@ class HomeAgentService:
         keypair = self.key_provider.generate_keypair()
         device_id = str(uuid.uuid4())
         allowed_ip = self._next_device_ip(state)
-        token = self._create_pairing_token(name)
         now = utc_now()
 
         device = {
@@ -285,7 +286,6 @@ class HomeAgentService:
             "status": "Approved",
             "lastSeen": "Just now",
             "createdAt": now,
-            "token": token,
             "wireguard": {
                 "publicKey": keypair.public_key,
                 "allowedIp": allowed_ip,
@@ -327,6 +327,8 @@ class HomeAgentService:
             raise AgentError(HTTPStatus.CONFLICT, "Pair a VPS before adding relay routes")
 
         name, target = route_from_payload(payload)
+        if is_local_admin_service(target, self.admin_port):
+            raise AgentError(HTTPStatus.BAD_REQUEST, "The Home Agent UI cannot be exposed as a relay route")
         routes = self._current_relay_routes(state)
         routes[name] = target
         relay = state.setdefault("homeAgent", {}).setdefault("relay", {})
@@ -357,9 +359,6 @@ class HomeAgentService:
     def remove_relay_route(self, name: str) -> dict[str, Any]:
         state = self.store.load()
         route_name = normalize_route_name(name)
-
-        if route_name == "tunnel":
-            raise AgentError(HTTPStatus.BAD_REQUEST, "The tunnel route cannot be removed")
 
         routes = self._current_relay_routes(state)
         if route_name not in routes:
@@ -392,10 +391,6 @@ class HomeAgentService:
                 return candidate
         raise AgentError(HTTPStatus.CONFLICT, "No device addresses are available")
 
-    def _create_pairing_token(self, name: str) -> str:
-        slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:28] or "device"
-        return f"tt://{slug}-{secrets.token_urlsafe(8)}"
-
     def _enrollment_payload(self, device: dict[str, Any], keypair: KeyPair, state: dict[str, Any]) -> dict[str, Any]:
         endpoint = self._endpoint(state)
         peer_public_key = self._enrollment_peer_public_key(state)
@@ -414,7 +409,6 @@ class HomeAgentService:
         )
 
         return {
-            "uri": device["token"],
             "deviceId": device["id"],
             "wireguardConfig": wireguard_config,
         }
@@ -570,7 +564,7 @@ class HomeAgentService:
         request_headers["Accept-Encoding"] = "identity"
 
         data = None if method in {"GET", "HEAD"} else request_body
-        rewrite_base_path = "/relay/" if route_name == "tunnel" else f"/relay/{route_name}/"
+        rewrite_base_path = f"/relay/{route_name}/"
         request_headers.update(proxy_forwarding_headers(relay_headers, rewrite_base_path, path))
         route_settings = self._current_relay_route_settings().get(route_name, {})
         if route_settings.get("hostHeader"):
@@ -617,7 +611,7 @@ class HomeAgentService:
         path = str(relay_request.get("path") or "/")
         target_base, target_path, route_name = self._resolve_relay_target(path, relay_headers)
         route_settings = self._current_relay_route_settings(state).get(route_name, {})
-        rewrite_base_path = "/relay/" if route_name == "tunnel" else f"/relay/{route_name}/"
+        rewrite_base_path = f"/relay/{route_name}/"
 
         if route_settings.get("websocket") is False:
             return relay_error_response("WebSockets are disabled for this route", rewrite_base_path, target_base)
@@ -765,13 +759,13 @@ class HomeAgentService:
                     "status": "connected",
                     "transport": "tls-reverse-tunnel",
                     "managementUrl": (public.get("vpsAgent") or {}).get("managementUrl") or management_url_for(public.get("vps", "")),
-                    "target": self.relay_target,
                     "routes": self._current_relay_routes(public),
                     "pairedAt": public.get("lastCheck", ""),
                 }
             home_agent["relay"]["routes"] = self._current_relay_routes(public)
             home_agent["relay"]["routeSettings"] = self._current_relay_route_settings(public)
             home_agent["relay"].pop("token", None)
+            home_agent["relay"].pop("target", None)
             if not home_agent.get("runtime") or home_agent.get("runtime", {}).get("backend") != "relay":
                 home_agent["runtime"] = self._home_relay_runtime("paired", "Home Agent paired as relay client")
             home_agent["wireguard"] = None
@@ -780,6 +774,8 @@ class HomeAgentService:
             if wireguard:
                 wireguard.pop("privateKey", None)
         public["endpoint"] = self._endpoint(public)
+        for device in public.get("devices", []):
+            device.pop("token", None)
         return public
 
     def _with_state(self, state: dict[str, Any]) -> dict[str, Any]:
@@ -807,13 +803,13 @@ class HomeAgentService:
                     routed_path = f"{routed_path}?{parsed.query}"
                 return routes[inferred_route], routed_path, inferred_route
 
-        return self.relay_target, raw_path, "tunnel"
+        raise AgentError(HTTPStatus.NOT_FOUND, "Relay route not found")
 
     def _current_relay_routes(self, state: dict[str, Any] | None = None) -> dict[str, str]:
         if state is None:
             state = self.store.load()
         persisted = ((state.get("homeAgent") or {}).get("relay") or {}).get("routes") or {}
-        return normalize_relay_routes(self.relay_target, {**self.relay_routes, **persisted})
+        return normalize_relay_routes(self.admin_port, {**self.relay_routes, **persisted})
 
     def _current_relay_route_settings(self, state: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
         if state is None:
@@ -990,8 +986,16 @@ class HomeAgentServer(ThreadingHTTPServer):
 class HomeAgentHandler(BaseHTTPRequestHandler):
     server: HomeAgentServer
     protocol_version = "HTTP/1.1"
+    server_version = "TaterTunnel"
+    sys_version = ""
+
+    def setup(self) -> None:
+        super().setup()
+        self.connection.settimeout(REQUEST_SOCKET_TIMEOUT_SECONDS)
 
     def do_GET(self) -> None:
+        if not self._require_local_request_host():
+            return
         path = urlparse(self.path).path
         if path == "/api/state":
             self._send_json(self.server.service.state())
@@ -1003,6 +1007,8 @@ class HomeAgentHandler(BaseHTTPRequestHandler):
         self._serve_static(path)
 
     def do_POST(self) -> None:
+        if not self._require_local_request_host():
+            return
         path = urlparse(self.path).path
         try:
             payload = self._read_json()
@@ -1021,13 +1027,17 @@ class HomeAgentHandler(BaseHTTPRequestHandler):
             else:
                 self._send_error(HTTPStatus.NOT_FOUND, "Endpoint not found")
         except AgentError as error:
+            self.close_connection = True
             self._send_error(error.status, error.message)
         except json.JSONDecodeError:
+            self.close_connection = True
             self._send_error(HTTPStatus.BAD_REQUEST, "Request body must be valid JSON")
         except Exception as error:
             self._send_unexpected_error(error)
 
     def do_DELETE(self) -> None:
+        if not self._require_local_request_host():
+            return
         path = urlparse(self.path).path
         route_prefix = "/api/relay-routes/"
         if path.startswith(route_prefix):
@@ -1052,14 +1062,30 @@ class HomeAgentHandler(BaseHTTPRequestHandler):
             self._send_unexpected_error(error)
 
     def log_message(self, format: str, *args: Any) -> None:
-        print(f"{self.address_string()} - {format % args}")
+        status = args[1] if len(args) > 1 else "-"
+        size = args[2] if len(args) > 2 else "-"
+        safe_path = urlparse(self.path).path or "/"
+        print(f'{self.client_address[0]} - "{self.command} {safe_path} {self.request_version}" {status} {size}')
 
     def _read_json(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length", "0"))
+        if self.headers.get("Transfer-Encoding"):
+            raise AgentError(HTTPStatus.BAD_REQUEST, "Transfer-Encoding is not supported")
+        if self.headers.get_content_type() != "application/json":
+            raise AgentError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "API requests must use application/json")
+        length = parse_content_length(self.headers.get("Content-Length", "0"))
+        if length > API_MAX_BODY_BYTES:
+            raise AgentError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Request body is too large")
         if length == 0:
             return {}
         body = self.rfile.read(length)
         return json.loads(body.decode("utf-8"))
+
+    def _require_local_request_host(self) -> bool:
+        if is_allowed_home_agent_host(self.headers.get("Host", "")):
+            return True
+        self.close_connection = True
+        self._send_error(HTTPStatus.MISDIRECTED_REQUEST, "Home Agent is only available on the local network")
+        return False
 
     def _serve_static(self, path: str) -> None:
         relative = "index.html" if path in {"", "/"} else path.lstrip("/")
@@ -1079,6 +1105,7 @@ class HomeAgentHandler(BaseHTTPRequestHandler):
         body = target.read_bytes()
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", mime_type)
+        self._send_browser_security_headers()
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -1087,6 +1114,8 @@ class HomeAgentHandler(BaseHTTPRequestHandler):
         body = json.dumps(payload, sort_keys=True).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -1097,11 +1126,32 @@ class HomeAgentHandler(BaseHTTPRequestHandler):
     def _send_unexpected_error(self, error: Exception) -> None:
         print("Home Agent unexpected error:")
         traceback.print_exception(type(error), error, error.__traceback__)
-        self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, f"Home Agent internal error: {error}")
+        self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Home Agent internal error")
+
+    def _send_browser_security_headers(self) -> None:
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self' data:; style-src 'self'; "
+            "script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'",
+        )
 
 
 def management_headers(token: str) -> dict[str, str]:
     return {"X-Tater-Relay-Token": token} if token else {}
+
+
+def parse_content_length(value: Any) -> int:
+    try:
+        length = int(str(value or "0"))
+    except (TypeError, ValueError) as error:
+        raise AgentError(HTTPStatus.BAD_REQUEST, "Content-Length must be a number") from error
+    if length < 0:
+        raise AgentError(HTTPStatus.BAD_REQUEST, "Content-Length cannot be negative")
+    return length
 
 
 def utc_now() -> str:
@@ -1112,7 +1162,7 @@ def normalize_route_name(name: str) -> str:
     route_name = str(name or "").strip().lower()
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", route_name):
         raise AgentError(HTTPStatus.BAD_REQUEST, "Route name must use lowercase letters, numbers, or dashes")
-    if route_name in {"api", "relay"}:
+    if route_name in {"api", "relay", "tunnel"}:
         raise AgentError(HTTPStatus.BAD_REQUEST, f"{route_name} is reserved")
     return route_name
 
@@ -1123,6 +1173,90 @@ def normalize_route_target(target: str) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise AgentError(HTTPStatus.BAD_REQUEST, "Route target must start with http:// or https://")
     return route_target
+
+
+def is_local_admin_service(target: str, admin_port: int) -> bool:
+    try:
+        parsed = urlparse(str(target or ""))
+        target_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError:
+        return False
+
+    if target_port != admin_port:
+        return False
+
+    target_host = (parsed.hostname or "").lower()
+    if target_host in {"localhost", "0.0.0.0", "::"}:
+        return True
+
+    try:
+        target_address = ipaddress.ip_address(target_host)
+    except ValueError:
+        target_addresses = resolve_host_addresses(target_host)
+    else:
+        target_addresses = {str(target_address)}
+
+    return bool(target_addresses & local_interface_addresses())
+
+
+def is_allowed_home_agent_host(value: str) -> bool:
+    try:
+        hostname = (urlparse(f"//{value}").hostname or "").lower()
+    except ValueError:
+        return False
+    if not hostname:
+        return False
+    if hostname in {"localhost", "0.0.0.0", "::"}:
+        return True
+
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        local_names = {socket.gethostname().lower(), socket.getfqdn().lower()}
+        return hostname in local_names or bool(resolve_host_addresses(hostname) & local_interface_addresses())
+
+    private_networks = (
+        ipaddress.ip_network("10.0.0.0/8"),
+        ipaddress.ip_network("172.16.0.0/12"),
+        ipaddress.ip_network("192.168.0.0/16"),
+        ipaddress.ip_network("fc00::/7"),
+    )
+    return bool(
+        address.is_loopback
+        or address.is_link_local
+        or any(address in network for network in private_networks if address.version == network.version)
+        or str(address) in local_interface_addresses()
+    )
+
+
+@lru_cache(maxsize=64)
+def resolve_host_addresses(host: str) -> frozenset[str]:
+    addresses: set[str] = set()
+    try:
+        for info in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM):
+            addresses.add(str(ipaddress.ip_address(info[4][0])))
+    except (OSError, ValueError):
+        pass
+    return frozenset(addresses)
+
+
+@lru_cache(maxsize=1)
+def local_interface_addresses() -> frozenset[str]:
+    addresses = {"127.0.0.1", "::1", "0.0.0.0", "::"}
+    for host in {socket.gethostname(), socket.getfqdn(), "localhost"}:
+        addresses.update(resolve_host_addresses(host))
+
+    for family, probe in (
+        (socket.AF_INET, ("192.0.2.1", 9)),
+        (socket.AF_INET6, ("2001:db8::1", 9, 0, 0)),
+    ):
+        try:
+            with socket.socket(family, socket.SOCK_DGRAM) as probe_socket:
+                probe_socket.connect(probe)
+                addresses.add(str(ipaddress.ip_address(probe_socket.getsockname()[0])))
+        except (OSError, ValueError):
+            pass
+    return frozenset(addresses)
 
 
 def header_value(headers: dict[str, Any], name: str) -> str:
@@ -1524,13 +1658,16 @@ def parse_relay_route(value: str) -> tuple[str, str]:
         raise argparse.ArgumentTypeError(error.message) from error
 
 
-def normalize_relay_routes(relay_target: str, relay_routes: dict[str, str]) -> dict[str, str]:
-    normalized = {
-        str(name).strip().lower(): str(target).strip().rstrip("/")
-        for name, target in relay_routes.items()
-        if str(name).strip() and str(target).strip()
-    }
-    normalized.setdefault("tunnel", relay_target.rstrip("/"))
+def normalize_relay_routes(admin_port: int, relay_routes: dict[str, str]) -> dict[str, str]:
+    normalized: dict[str, str] = {}
+    for name, target in relay_routes.items():
+        route_name = str(name).strip().lower()
+        route_target = str(target).strip().rstrip("/")
+        if not route_name or not route_target or route_name == "tunnel":
+            continue
+        if is_local_admin_service(route_target, admin_port):
+            continue
+        normalized[route_name] = route_target
     return normalized
 
 
@@ -1577,13 +1714,12 @@ def build_server(
     wireguard_backend: str = "config",
     wireguard_config: Path = WIREGUARD_CONFIG_PATH,
     wireguard_interface: str = "tater-home",
-    relay_target: str = "http://127.0.0.1:4173",
     relay_routes: dict[str, str] | None = None,
     relay_workers: int = DEFAULT_RELAY_WORKERS,
 ) -> HomeAgentServer:
     store = ConfigStore(state_file)
     runtime = build_wireguard_client_runtime(wireguard_backend, wireguard_config, wireguard_interface)
-    service = HomeAgentService(store, wireguard_runtime=runtime, relay_target=relay_target, relay_routes=relay_routes)
+    service = HomeAgentService(store, wireguard_runtime=runtime, admin_port=port, relay_routes=relay_routes)
     return HomeAgentServer((host, port), static_root.resolve(), service, relay_workers=relay_workers)
 
 
@@ -1596,7 +1732,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--wireguard-backend", choices=["config", "wg", "system"], default="config")
     parser.add_argument("--wireguard-config", default=WIREGUARD_CONFIG_PATH, type=Path)
     parser.add_argument("--wireguard-interface", default="tater-home")
-    parser.add_argument("--relay-target", default="http://127.0.0.1:4173")
     parser.add_argument("--relay-workers", default=DEFAULT_RELAY_WORKERS, type=int)
     parser.add_argument(
         "--relay-route",
@@ -1616,7 +1751,6 @@ def main(argv: list[str] | None = None) -> int:
         args.wireguard_backend,
         args.wireguard_config,
         args.wireguard_interface,
-        args.relay_target,
         relay_routes,
         args.relay_workers,
     )
@@ -1624,7 +1758,6 @@ def main(argv: list[str] | None = None) -> int:
     print(f"State file: {args.state_file}")
     print(f"WireGuard backend: {args.wireguard_backend}")
     print(f"WireGuard config: {args.wireguard_config}")
-    print(f"Home Relay target: {args.relay_target}")
     print(f"Home Relay workers: {max(1, args.relay_workers)}")
     if relay_routes:
         for name, target in sorted(relay_routes.items()):

@@ -181,7 +181,22 @@ write_caddyfile() {
 }
 
 $DOMAIN {
-  reverse_proxy 127.0.0.1:$LISTEN_PORT
+  @public_relay path /relay /relay/*
+  handle @public_relay {
+    respond 404
+  }
+
+  handle {
+    reverse_proxy 127.0.0.1:$LISTEN_PORT
+  }
+
+  header {
+    Strict-Transport-Security "max-age=31536000"
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Referrer-Policy "no-referrer"
+    -Server
+  }
 }
 
 import tater-sites/*.caddy
@@ -189,7 +204,22 @@ EOF
   else
     cat > "$caddyfile" <<EOF
 $DOMAIN {
-  reverse_proxy 127.0.0.1:$LISTEN_PORT
+  @public_relay path /relay /relay/*
+  handle @public_relay {
+    respond 404
+  }
+
+  handle {
+    reverse_proxy 127.0.0.1:$LISTEN_PORT
+  }
+
+  header {
+    Strict-Transport-Security "max-age=31536000"
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Referrer-Policy "no-referrer"
+    -Server
+  }
 }
 
 import tater-sites/*.caddy
@@ -233,8 +263,10 @@ Public ports expected:
   443/tcp   Caddy HTTPS
   51888/udp WireGuard devices
 
-WireGuard-only relay:
-  http://10.88.0.1:$LISTEN_PORT/relay/
+WireGuard-only named routes:
+  http://10.88.0.1:$LISTEN_PORT/relay/ROUTE_NAME/
+
+The bare /relay/ path and Home Agent administration UI are not exposed.
 
 Private local service:
   http://127.0.0.1:$LISTEN_PORT

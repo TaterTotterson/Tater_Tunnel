@@ -649,7 +649,6 @@ function renderRelayRoutes() {
     });
 
     const removeButton = card.querySelector(".route-remove-button");
-    removeButton.hidden = name === "tunnel";
     removeButton.addEventListener("click", async () => {
       try {
         await removeRelayRoute(name);
@@ -963,7 +962,7 @@ function parseRouteTimeout(value) {
 }
 
 function routeRelayPath(name) {
-  return name === "tunnel" ? "/relay/" : `/relay/${name}/`;
+  return `/relay/${name}/`;
 }
 
 function routeAccessUrl(name) {
@@ -1084,9 +1083,9 @@ function normalizeState(payload) {
 }
 
 function getRelayRoutes() {
-  return {
-    ...(state.homeAgent?.relay?.routes || {})
-  };
+  return Object.fromEntries(
+    Object.entries(state.homeAgent?.relay?.routes || {}).filter(([name]) => name !== "tunnel")
+  );
 }
 
 function getRelayRouteSettings() {

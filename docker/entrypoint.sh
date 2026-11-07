@@ -27,7 +27,6 @@ case "$agent" in
             --wireguard-backend "${TATER_TUNNEL_WIREGUARD_BACKEND:-config}" \
             --wireguard-config "${TATER_TUNNEL_WIREGUARD_CONFIG:-/config/wireguard/tater-home.conf}" \
             --wireguard-interface "${TATER_TUNNEL_WIREGUARD_INTERFACE:-tater-home}" \
-            --relay-target "${TATER_TUNNEL_RELAY_TARGET:-http://127.0.0.1:4173}" \
             --relay-workers "${TATER_TUNNEL_RELAY_WORKERS:-8}" \
             "$@"
         ;;

@@ -4,7 +4,9 @@
 
 The VPS relays traffic. The Home Agent owns trust.
 
-The VPS should not decide who may use Tater services or approved local app routes. It should only hold the minimum relay and WireGuard peer state needed to connect approved devices to the Home Agent.
+The Home Agent decides which devices and named app routes are approved. The VPS
+stores the WireGuard peer list needed to enforce that only enrolled VPN source
+addresses can enter the relay.
 
 ## Two Transport Paths
 
@@ -29,18 +31,20 @@ WireGuard device mode provides:
 - Peer authentication.
 - A private path between remote devices and the VPS.
 
-WireGuard does not prove that a device is approved by Tater. It proves possession of a peer private key.
+For general app routes, possession of an enrolled WireGuard peer key is the
+device credential. A copied profile has the same authority until that peer is
+revoked.
 
-## Tater Device Trust
+## Tater Service Identity
 
-Tater Device Trust provides:
+Tater services may add application-level identity on top of the tunnel:
 
 - Tater Device ID.
 - Pairing token or signing key.
 - Approval record.
 - Revocation state.
 
-Approved Tater services should require both:
+When a Tater service supports it, it should require both:
 
 - The request arrives through an approved transport path.
 - The requester proves an approved Tater device identity.
@@ -52,20 +56,20 @@ Tater access and raw local network access must be treated as different products.
 ### Tater Access
 
 Tater services can enforce Tater Device Trust directly. This is the safest MVP path.
-For non-Tater local apps, the Home Agent relay route is the enforcement point because those apps usually cannot validate Tater Device Trust by themselves.
+For non-Tater local apps, the enrolled WireGuard peer and explicit Home Agent
+route are the enforcement points because those apps cannot validate Tater
+identity themselves.
 
 Approved device:
 
 - Has a WireGuard peer.
-- Has a Tater identity.
 - Is approved by Home Agent.
 - Can access approved Tater services or local app routes through the VPS-to-Home relay.
 
 Revoked device:
 
 - WireGuard peer is removed.
-- Tater identity is revoked.
-- Active sessions are invalidated.
+- New relay connections from that peer address are rejected.
 
 ### Local Network Access
 
@@ -79,37 +83,45 @@ Until that exists, local network access should remain off by default and outside
 
 ### VPS Compromise
 
-If the VPS is compromised, an attacker may see relay metadata and WireGuard peer configuration. They should still be unable to access approved Tater services or local app routes without approved Tater device identity and Home Agent authorization.
+The VPS terminates the device WireGuard connection and participates in the Home
+Relay, so a compromised VPS can observe relayed traffic and access the named
+routes while the Home Agent is connected. Tater Tunnel limits the reachable
+surface to explicit routes, but it does not claim to protect those routes from
+a fully compromised VPS.
 
 Required controls:
 
-- No service tokens stored on the VPS.
-- No Tater admin authority on the VPS.
+- No local application credentials are stored on the VPS.
+- The Home Agent UI and administration API are never relay routes.
+- Public HTTPS requests to `/relay` are rejected.
+- Relay socket sources must match an active WireGuard peer address.
 - Home Agent can rotate keys and reclaim to a new VPS.
 
 ### Stolen WireGuard Config
 
-If a remote device's WireGuard config is copied, WireGuard access alone should not grant Tater service or app-route access.
+If a remote device's WireGuard config is copied, the copy has the same route
+access as that device until the peer is revoked.
 
 Required controls:
 
-- Tater service requests and exposed app routes require device identity proof or Home Agent route authorization.
-- Device revocation invalidates the Tater identity.
 - Home Agent removes the WireGuard peer.
+- VPS Agent rejects relay traffic from addresses without an active peer.
+- Tater services should separately revoke application sessions when supported.
 
 ### Lost Device
 
 Revocation must remove both layers:
 
 - Delete WireGuard peer.
-- Revoke Tater identity.
-- Invalidate sessions and pairing tokens.
+- Revoke application identity and sessions when the routed app supports them.
 
 ## MVP Policy
 
 For the first build:
 
 - Enable Tater service and explicit app-route access.
+- Keep the Home Agent UI and API local-only.
+- Require an active WireGuard peer source for every relay request.
 - Keep raw LAN routes disabled.
 - Show raw LAN access as an advanced future control.
 - Document that LAN access needs separate enforcement before release.

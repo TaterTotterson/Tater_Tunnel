@@ -181,7 +181,7 @@ prepare_state() {
   if [ -n "$PAIRING_CODE" ]; then
     printf '%s\n' "$PAIRING_CODE" > "$pairing_file"
   elif [ ! -s "$pairing_file" ]; then
-    PAIRING_CODE="$(python3 -c 'import secrets; alphabet="ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; print("".join(secrets.choice(alphabet) for _ in range(4)) + "-" + "".join(secrets.choice(alphabet) for _ in range(4)))')"
+    PAIRING_CODE="$(python3 -c 'import secrets; alphabet="ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; print("".join(secrets.choice(alphabet) for _ in range(5)) + "-" + "".join(secrets.choice(alphabet) for _ in range(5)))')"
     printf '%s\n' "$PAIRING_CODE" > "$pairing_file"
   else
     PAIRING_CODE="$(cat "$pairing_file")"
@@ -224,7 +224,14 @@ CapabilityBoundingSet=CAP_NET_ADMIN
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
-ProtectSystem=full
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectControlGroups=true
+PrivateDevices=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
 ReadWritePaths=$STATE_DIR $CONFIG_DIR /run
 
 [Install]
