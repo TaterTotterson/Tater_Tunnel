@@ -32,6 +32,7 @@ PAIRING_FAILURE_LIMIT = 8
 PAIRING_FAILURE_WINDOW_SECONDS = 5 * 60
 MAX_TRACKED_PAIRING_ADDRESSES = 1024
 REQUEST_SOCKET_TIMEOUT_SECONDS = 30
+WIREGUARD_DIAGNOSTICS_WAIT_SECONDS = 1.5
 HOME_AGENT_ADDRESS = ipaddress.ip_address("10.88.0.2")
 LANDING_MASCOT_PATH = PROJECT_ROOT / "assets" / "tater-vps-mascot.png"
 LANDING_PAGE_HTML = """<!doctype html>
@@ -225,6 +226,11 @@ class VpsAgentService:
         self._pairing_failures: dict[str, list[float]] = {}
         self._pairing_failure_lock = threading.Lock()
         self._state_lock = threading.RLock()
+        self._diagnostics_lock = threading.Lock()
+        self._diagnostics_event = threading.Event()
+        self._diagnostics_running = False
+        self._diagnostics_result: dict[str, Any] = {}
+        self._diagnostics_error = ""
         self._restore_wireguard_state()
 
     def state(self) -> dict[str, Any]:
@@ -241,10 +247,65 @@ class VpsAgentService:
 
     def wireguard_diagnostics(self) -> dict[str, Any]:
         state = self.store.load()
+        diagnostics, warning = self._bounded_wireguard_diagnostics(state)
+        if warning:
+            diagnostics.setdefault("livePeers", [])
+            warnings = diagnostics.setdefault("livePeerWarnings", [])
+            if warning not in warnings:
+                warnings.append(warning)
         return {
-            "wireguard": self.wireguard_runtime.diagnostics(state),
+            "wireguard": diagnostics,
             "runtime": self._public_state(state).get("runtime"),
         }
+
+    def _bounded_wireguard_diagnostics(
+        self, state: dict[str, Any]
+    ) -> tuple[dict[str, Any], str]:
+        with self._diagnostics_lock:
+            if not self._diagnostics_running:
+                self._diagnostics_running = True
+                self._diagnostics_event = threading.Event()
+                worker = threading.Thread(
+                    target=self._refresh_wireguard_diagnostics,
+                    args=(deepcopy(state), self._diagnostics_event),
+                    name="tater-wireguard-diagnostics",
+                    daemon=True,
+                )
+                worker.start()
+            event = self._diagnostics_event
+
+        completed = event.wait(WIREGUARD_DIAGNOSTICS_WAIT_SECONDS)
+        with self._diagnostics_lock:
+            diagnostics = deepcopy(self._diagnostics_result)
+            error = self._diagnostics_error
+
+        if completed and diagnostics:
+            return diagnostics, error
+        if not diagnostics:
+            diagnostics = {
+                "backend": getattr(self.wireguard_runtime, "backend", "unknown"),
+                "interfaceName": getattr(self.wireguard_runtime, "interface_name", "tater0"),
+                "livePeers": [],
+                "livePeerWarnings": [],
+            }
+        return diagnostics, error or "Live WireGuard diagnostics are still being collected"
+
+    def _refresh_wireguard_diagnostics(
+        self, state: dict[str, Any], event: threading.Event
+    ) -> None:
+        diagnostics: dict[str, Any] = {}
+        error = ""
+        try:
+            diagnostics = self.wireguard_runtime.diagnostics(state)
+        except Exception as caught:
+            error = f"Live WireGuard diagnostics failed: {caught}"
+        finally:
+            with self._diagnostics_lock:
+                if diagnostics:
+                    self._diagnostics_result = diagnostics
+                self._diagnostics_error = error
+                self._diagnostics_running = False
+                event.set()
 
     @synchronized_state
     def claim(self, payload: dict[str, Any], remote_address: str = "") -> dict[str, Any]:

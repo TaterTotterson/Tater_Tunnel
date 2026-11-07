@@ -1,12 +1,14 @@
-# Tater Tunnel v0.2.1
+# Tater Tunnel v0.2.2
 
-This patch fixes the macOS Home Agent VPN switching off immediately after it
-was enabled.
+This patch keeps the Home Agent connected when optional live WireGuard
+diagnostics are slow or unavailable.
 
-## macOS Home Agent
+## Connection reliability
 
-- WireGuard configuration comments are now parsed correctly by the bundled
-  packet-tunnel extension.
-- Existing VPS pairing, keys, devices, and private service routes are preserved.
-- The system extension remains signed with the Tater Tunnel Developer ID and
-  retains the same split-tunnel network permissions introduced in v0.2.0.
+- A successful authenticated VPS health check now remains authoritative even
+  when live peer diagnostics time out.
+- VPS diagnostic commands and the complete diagnostics request have bounded
+  deadlines, preventing a stalled OS probe from making the UI report that the
+  private tunnel is down.
+- Existing VPS pairing, WireGuard keys, devices, and private service routes are
+  preserved during the update.
