@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 
-SYSTEM_COMMAND_TIMEOUT_SECONDS = 3
+SYSTEM_COMMAND_TIMEOUT_SECONDS = 2
 
 
 class WireGuardRuntimeError(Exception):

@@ -42,7 +42,7 @@ class RecordingRunner:
 class WireGuardRuntimeTests(unittest.TestCase):
     @patch("tater_tunnel.wireguard_runtime.subprocess.run")
     def test_system_commands_return_a_bounded_timeout(self, run):
-        run.side_effect = subprocess.TimeoutExpired(["wg", "show"], 3)
+        run.side_effect = subprocess.TimeoutExpired(["wg", "show"], 2)
 
         completed = CommandRunner().run(["wg", "show"])
 
