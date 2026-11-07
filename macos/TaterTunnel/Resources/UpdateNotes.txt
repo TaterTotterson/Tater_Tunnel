@@ -1,1 +1,1 @@
-Closes public relay access, requires an enrolled WireGuard peer for every route, keeps the Home Agent UI local-only, and verifies future app updates with the Tater signing identity.
+Locks relay routes to exact active WireGuard peer addresses, repairs older Caddy and firewall rules during VPS updates, closes revoked WebSocket sessions, and adds a complete VPS security audit command.

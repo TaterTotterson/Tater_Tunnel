@@ -228,10 +228,16 @@ ProtectSystem=strict
 ProtectKernelTunables=true
 ProtectControlGroups=true
 PrivateDevices=true
+ProtectClock=true
+ProtectHostname=true
 LockPersonality=true
+MemoryDenyWriteExecute=true
 RestrictRealtime=true
 RestrictSUIDSGID=true
+RestrictNamespaces=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+SocketBindDeny=any
+SocketBindAllow=tcp:$LISTEN_PORT
 ReadWritePaths=$STATE_DIR $CONFIG_DIR /run
 
 [Install]

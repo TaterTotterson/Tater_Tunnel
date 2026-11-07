@@ -241,11 +241,20 @@ configure_firewall() {
 
   ufw default deny incoming
   ufw default allow outgoing
-  ufw allow "$SSH_PORT/tcp" comment 'SSH'
+  ufw default deny routed
+  ufw --force delete allow "$SSH_PORT/tcp" >/dev/null 2>&1 || true
+  ufw limit "$SSH_PORT/tcp" comment 'SSH rate limit'
   ufw allow 80/tcp comment 'Caddy HTTP and ACME'
   ufw allow 443/tcp comment 'Caddy HTTPS'
-  ufw allow in on tater0 to any port "$LISTEN_PORT" proto tcp comment 'Tater Tunnel WireGuard relay'
+  ufw --force delete allow "$LISTEN_PORT/tcp" >/dev/null 2>&1 || true
+  ufw --force delete allow "$LISTEN_PORT" >/dev/null 2>&1 || true
+  ufw --force delete allow in on tater0 to any port "$LISTEN_PORT" proto tcp >/dev/null 2>&1 || true
+  ufw --force delete allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$LISTEN_PORT" proto tcp >/dev/null 2>&1 || true
+  ufw --force delete deny in to any port "$LISTEN_PORT" proto tcp >/dev/null 2>&1 || true
+  ufw allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$LISTEN_PORT" proto tcp comment 'Tater Tunnel WireGuard relay'
+  ufw deny in to any port "$LISTEN_PORT" proto tcp comment 'Block public Tater relay'
   ufw allow 51888/udp comment 'Tater Tunnel WireGuard'
+  ufw logging low
   ufw --force enable
 }
 
@@ -276,6 +285,9 @@ Useful checks:
   sudo systemctl status caddy
   curl -fsS https://$DOMAIN/
   sudo wg show tater0
+
+Security audit:
+  sudo /opt/tater-tunnel/scripts/audit-vps-security.sh --domain $DOMAIN
 EOF
 }
 

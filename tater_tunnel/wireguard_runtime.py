@@ -241,7 +241,16 @@ class WireGuardSystemRuntime(WireGuardConfigRuntime):
 
     def reset(self) -> dict[str, Any]:
         result = super().reset()
-        result["message"] = "WireGuard config removed; live interface unchanged"
+        diagnostics = self.probe.inspect(self.interface_name)
+        commands_run: list[str] = []
+        if diagnostics["platform"] == "Linux" and diagnostics["interfaceExists"]:
+            if not diagnostics["commands"]["ip"]:
+                raise WireGuardRuntimeError("ip command is required to remove the managed WireGuard interface")
+            commands_run.append(self._run_system_command(["ip", "link", "delete", "dev", self.interface_name]))
+
+        result["lastAction"] = "reset"
+        result["message"] = "WireGuard config and managed interface removed"
+        result["commands"] = commands_run
         result["system"] = self.probe.inspect(self.interface_name)
         return result
 
@@ -501,6 +510,8 @@ def normalized_peers(state: dict[str, Any]) -> list[dict[str, str]]:
         )
 
     for peer in state.get("peers", []):
+        if str(peer.get("status") or "active").lower() != "active":
+            continue
         peers.append(deepcopy(peer))
 
     return peers

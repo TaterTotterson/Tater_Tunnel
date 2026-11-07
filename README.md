@@ -4,6 +4,15 @@ Website: https://tatertunnel.com
 
 Tater Tunnel is a privacy-first secure networking layer for Tater. The user brings a VPS; Tater Tunnel pairs a Home Agent to that VPS over a simple outbound relay path, while remote phones and laptops can use WireGuard VPN mode against the VPS.
 
+Named app routes are WireGuard-only. The recommended VPS installer blocks
+`/relay` on public HTTPS, denies the raw agent port on public interfaces, and
+requires every relay source to match one active WireGuard peer address. Run the
+included audit after installation or an update:
+
+```bash
+sudo /opt/tater-tunnel/scripts/audit-vps-security.sh --domain tunnel.example.com
+```
+
 This repo currently contains the first product slices:
 
 - A static Home Agent UI prototype in `index.html`

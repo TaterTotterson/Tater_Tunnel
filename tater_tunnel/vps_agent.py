@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
+import functools
 import ipaddress
 import json
 import os
@@ -165,9 +167,19 @@ class VpsAgentError(Exception):
         self.message = message
 
 
+def synchronized_state(method: Any) -> Any:
+    @functools.wraps(method)
+    def wrapped(self: "VpsAgentService", *args: Any, **kwargs: Any) -> Any:
+        with self._state_lock:
+            return method(self, *args, **kwargs)
+
+    return wrapped
+
+
 class WebSocketRelaySession:
-    def __init__(self, session_id: str):
+    def __init__(self, session_id: str, remote_address: str):
         self.id = session_id
+        self.remote_address = remote_address
         self._condition = threading.Condition()
         self._client_frames: list[dict[str, Any]] = []
         self._server_frames: list[dict[str, Any]] = []
@@ -317,8 +329,8 @@ class RelayBroker:
             self._condition.notify_all()
             return {"accepted": True, "id": request_id}
 
-    def create_websocket_session(self) -> WebSocketRelaySession:
-        session = WebSocketRelaySession(secrets.token_urlsafe(18))
+    def create_websocket_session(self, remote_address: str) -> WebSocketRelaySession:
+        session = WebSocketRelaySession(secrets.token_urlsafe(18), remote_address)
         with self._condition:
             if len(self._websocket_sessions) >= MAX_WEBSOCKET_SESSIONS:
                 raise VpsAgentError(HTTPStatus.SERVICE_UNAVAILABLE, "WebSocket relay session limit reached")
@@ -336,6 +348,30 @@ class RelayBroker:
         with self._condition:
             session = self._websocket_sessions.pop(session_id, None)
         if session:
+            session.close()
+
+    def close_websocket_sessions_for_network(
+        self,
+        network: ipaddress.IPv4Network | ipaddress.IPv6Network,
+    ) -> None:
+        with self._condition:
+            session_ids = []
+            for session_id, session in self._websocket_sessions.items():
+                try:
+                    address = ipaddress.ip_address(session.remote_address)
+                except ValueError:
+                    continue
+                if address in network:
+                    session_ids.append(session_id)
+            sessions = [self._websocket_sessions.pop(session_id) for session_id in session_ids]
+        for session in sessions:
+            session.close()
+
+    def close_all_websocket_sessions(self) -> None:
+        with self._condition:
+            sessions = list(self._websocket_sessions.values())
+            self._websocket_sessions.clear()
+        for session in sessions:
             session.close()
 
 
@@ -397,8 +433,8 @@ class VpsConfigStore:
                 with os.fdopen(fd, "w", encoding="utf-8") as handle:
                     json.dump(merged, handle, indent=2, sort_keys=True)
                     handle.write("\n")
+                os.chmod(temp_name, 0o600)
                 if existing_stat:
-                    os.chmod(temp_name, existing_stat.st_mode & 0o777)
                     if hasattr(os, "chown"):
                         os.chown(temp_name, existing_stat.st_uid, existing_stat.st_gid)
                 os.replace(temp_name, self.path)
@@ -430,6 +466,19 @@ class VpsConfigStore:
         )
         merged["pairing"].update(state.get("pairing", {}))
         merged["interface"].update(state.get("interface", {}))
+        peers: list[dict[str, Any]] = []
+        for peer in merged.get("peers", []):
+            if not isinstance(peer, dict):
+                continue
+            try:
+                validate_wireguard_public_key(str(peer.get("publicKey") or ""))
+                allowed_ip = normalize_peer_allowed_ip(merged, str(peer.get("allowedIp") or ""))
+            except VpsAgentError:
+                continue
+            normalized_peer = deepcopy(peer)
+            normalized_peer["allowedIp"] = allowed_ip
+            peers.append(normalized_peer)
+        merged["peers"] = peers
         return merged
 
 
@@ -440,7 +489,6 @@ class VpsAgentService:
         key_provider: WireGuardKeyProvider | None = None,
         wireguard_runtime: Any | None = None,
         relay_broker: RelayBroker | None = None,
-        allow_loopback_relay: bool = False,
     ):
         self.store = store
         self.key_provider = key_provider or WireGuardKeyProvider()
@@ -450,9 +498,10 @@ class VpsAgentService:
             "tater0",
         )
         self.relay_broker = relay_broker or RelayBroker()
-        self.allow_loopback_relay = allow_loopback_relay
         self._pairing_failures: dict[str, list[float]] = {}
         self._pairing_failure_lock = threading.Lock()
+        self._state_lock = threading.RLock()
+        self._restore_wireguard_state()
 
     def state(self) -> dict[str, Any]:
         return self._public_state(self.store.load())
@@ -461,13 +510,11 @@ class VpsAgentService:
         state = self.store.load()
         if state["claimed"]:
             self._require_relay_token(token)
-        state["lastCheck"] = utc_now()
-        saved = self.store.save(state)
         return {
             "status": "ok",
-            "claimed": saved["claimed"],
-            "pairingEnabled": saved["pairing"]["enabled"],
-            "peerCount": len(saved["peers"]),
+            "claimed": state["claimed"],
+            "pairingEnabled": state["pairing"]["enabled"],
+            "peerCount": len(state["peers"]),
         }
 
     def wireguard_diagnostics(self) -> dict[str, Any]:
@@ -477,6 +524,7 @@ class VpsAgentService:
             "runtime": self._public_state(state).get("runtime"),
         }
 
+    @synchronized_state
     def claim(self, payload: dict[str, Any], remote_address: str = "") -> dict[str, Any]:
         state = self.store.load()
         pairing_code = str(payload.get("pairingCode") or "").strip()
@@ -545,6 +593,7 @@ class VpsAgentService:
 
         return response
 
+    @synchronized_state
     def add_peer(self, payload: dict[str, Any]) -> dict[str, Any]:
         state = self.store.load()
         self._require_claimed(state)
@@ -560,6 +609,11 @@ class VpsAgentService:
             raise VpsAgentError(HTTPStatus.BAD_REQUEST, "Peer public key is required")
         if not allowed_ip:
             raise VpsAgentError(HTTPStatus.BAD_REQUEST, "Allowed IP is required")
+        if len(peer_id) > 128 or len(name) > 128:
+            raise VpsAgentError(HTTPStatus.BAD_REQUEST, "Peer id and name must be 128 characters or fewer")
+
+        validate_wireguard_public_key(public_key)
+        allowed_ip = normalize_peer_allowed_ip(state, allowed_ip)
 
         state["peers"] = [
             peer
@@ -583,24 +637,36 @@ class VpsAgentService:
         self._apply_wireguard(state)
         return {"state": self._public_state(self.store.save(state))}
 
+    @synchronized_state
     def remove_peer(self, peer_id: str) -> dict[str, Any]:
         state = self.store.load()
         self._require_claimed(state)
-        original_count = len(state["peers"])
+        removed_peers = [peer for peer in state["peers"] if peer["id"] == peer_id]
         state["peers"] = [peer for peer in state["peers"] if peer["id"] != peer_id]
 
-        if len(state["peers"]) == original_count:
+        if not removed_peers:
             raise VpsAgentError(HTTPStatus.NOT_FOUND, "Peer not found")
 
         state["lastCheck"] = utc_now()
         self._apply_wireguard(state)
-        return {"state": self._public_state(self.store.save(state))}
+        saved = self.store.save(state)
+        for peer in removed_peers:
+            try:
+                network = ipaddress.ip_network(str(peer.get("allowedIp") or ""), strict=False)
+            except ValueError:
+                continue
+            self.relay_broker.close_websocket_sessions_for_network(network)
+        return {"state": self._public_state(saved)}
 
+    @synchronized_state
     def reset(self) -> dict[str, Any]:
         state = self.store.reset()
         self._apply_wireguard(state)
-        return {"state": self._public_state(self.store.save(state))}
+        saved = self.store.save(state)
+        self.relay_broker.close_all_websocket_sessions()
+        return {"state": self._public_state(saved)}
 
+    @synchronized_state
     def reopen_pairing(self, pairing_code: str | None = None) -> dict[str, Any]:
         state = self.store.reopen_pairing(pairing_code)
         return {"state": self._public_state(state)}
@@ -643,7 +709,7 @@ class VpsAgentService:
         if (state.get("homeAgent") or {}).get("transport") != "relay":
             raise VpsAgentError(HTTPStatus.CONFLICT, "Home Agent is not using relay transport")
 
-        session = self.relay_broker.create_websocket_session()
+        session = self.relay_broker.create_websocket_session(remote_address)
         relay_request = {
             "id": session.id,
             "sessionId": session.id,
@@ -747,17 +813,15 @@ class VpsAgentService:
         except ValueError as error:
             raise VpsAgentError(HTTPStatus.FORBIDDEN, "Relay access requires an approved WireGuard device") from error
 
-        if self.allow_loopback_relay and client_ip.is_loopback:
-            return
-
         for peer in state.get("peers", []):
             if str(peer.get("status") or "active").lower() != "active":
                 continue
             try:
-                allowed_network = ipaddress.ip_network(str(peer.get("allowedIp") or ""), strict=False)
-            except ValueError:
+                allowed_ip = normalize_peer_allowed_ip(state, str(peer.get("allowedIp") or ""))
+                allowed_address = ipaddress.ip_interface(allowed_ip).ip
+            except (ValueError, VpsAgentError):
                 continue
-            if client_ip in allowed_network:
+            if client_ip == allowed_address:
                 return
 
         raise VpsAgentError(HTTPStatus.FORBIDDEN, "Relay access requires an approved WireGuard device")
@@ -830,6 +894,11 @@ class VpsAgentService:
             state["runtime"] = self.wireguard_runtime.apply(state)
         except WireGuardRuntimeError as error:
             raise VpsAgentError(HTTPStatus.BAD_GATEWAY, f"WireGuard runtime failed: {error}") from error
+
+    def _restore_wireguard_state(self) -> None:
+        state = self.store.load()
+        self._apply_wireguard(state)
+        self.store.save(state)
 
     def _public_state(self, state: dict[str, Any]) -> dict[str, Any]:
         public = deepcopy(state)
@@ -1255,6 +1324,33 @@ def create_pairing_code() -> str:
     return f"{left}-{right}"
 
 
+def validate_wireguard_public_key(value: str) -> None:
+    try:
+        decoded = base64.b64decode(str(value or "").encode("ascii"), validate=True)
+    except (binascii.Error, UnicodeEncodeError, ValueError) as error:
+        raise VpsAgentError(HTTPStatus.BAD_REQUEST, "Peer public key is not valid base64") from error
+    if len(decoded) != 32 or not any(decoded):
+        raise VpsAgentError(HTTPStatus.BAD_REQUEST, "Peer public key must be a nonzero 32-byte WireGuard key")
+
+
+def normalize_peer_allowed_ip(state: dict[str, Any], value: str) -> str:
+    try:
+        allowed = ipaddress.ip_network(str(value or ""), strict=True)
+        tunnel_network = ipaddress.ip_network(str(state["interface"]["network"]), strict=True)
+        interface_address = ipaddress.ip_interface(str(state["interface"]["address"])).ip
+    except (KeyError, ValueError) as error:
+        raise VpsAgentError(HTTPStatus.BAD_REQUEST, "Peer Allowed IP is invalid") from error
+
+    if allowed.version != tunnel_network.version or allowed.prefixlen != allowed.max_prefixlen:
+        raise VpsAgentError(HTTPStatus.BAD_REQUEST, "Peer Allowed IP must identify exactly one tunnel address")
+    allowed_address = allowed.network_address
+    if allowed_address not in tunnel_network or allowed_address == interface_address:
+        raise VpsAgentError(HTTPStatus.BAD_REQUEST, "Peer Allowed IP must be inside the WireGuard device network")
+    if allowed_address in {tunnel_network.network_address, tunnel_network.broadcast_address}:
+        raise VpsAgentError(HTTPStatus.BAD_REQUEST, "Peer Allowed IP is reserved")
+    return f"{allowed_address}/{allowed.max_prefixlen}"
+
+
 def is_relay_path(path: str) -> bool:
     return path == "/relay" or path.startswith("/relay/")
 
@@ -1448,15 +1544,10 @@ def build_server(
     wireguard_backend: str = "config",
     wireguard_config: Path = WIREGUARD_CONFIG_PATH,
     wireguard_interface: str = "tater0",
-    allow_loopback_relay: bool = False,
 ) -> VpsAgentServer:
     store = VpsConfigStore(state_file, pairing_code)
     runtime = build_wireguard_runtime(wireguard_backend, wireguard_config, wireguard_interface)
-    service = VpsAgentService(
-        store,
-        wireguard_runtime=runtime,
-        allow_loopback_relay=allow_loopback_relay,
-    )
+    service = VpsAgentService(store, wireguard_runtime=runtime)
     return VpsAgentServer((host, port), service)
 
 
@@ -1475,11 +1566,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--wireguard-backend", choices=["config", "wg", "system"], default="config")
     parser.add_argument("--wireguard-config", default=WIREGUARD_CONFIG_PATH, type=Path)
     parser.add_argument("--wireguard-interface", default="tater0")
-    parser.add_argument(
-        "--allow-loopback-relay",
-        action="store_true",
-        help="Development only: allow /relay requests from loopback instead of an enrolled WireGuard peer.",
-    )
     args = parser.parse_args(argv)
 
     if args.pairing_code and args.pairing_code_file:
@@ -1511,7 +1597,6 @@ def main(argv: list[str] | None = None) -> int:
         args.wireguard_backend,
         args.wireguard_config,
         args.wireguard_interface,
-        args.allow_loopback_relay,
     )
     state = server.service.state()
     print(f"Tater Tunnel VPS Agent listening on http://{args.host}:{args.port}")

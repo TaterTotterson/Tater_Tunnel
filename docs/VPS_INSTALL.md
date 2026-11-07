@@ -65,7 +65,9 @@ launcher from the downloaded source.
 Use the same command for updates after Tater Tunnel is already installed. Pick
 `Update existing install` in the menu. That path updates the app files, preserves
 the existing pairing/state directory, keeps the current systemd host and port,
-and restarts `tater-tunnel-vps`.
+restarts `tater-tunnel-vps`, repairs older generated Caddy configurations that
+exposed `/relay`, and replaces broad port `4174` firewall rules with a
+WireGuard-interface-only allow plus an explicit public deny.
 
 Pipe form, if preferred:
 
@@ -89,6 +91,7 @@ Use the arrow keys to select:
 - `Advanced existing VPS install`
 - `Optional ZNC install`
 - `Optional SFTPGo install/update`
+- `Audit VPS security`
 - `Uninstall VPS install`
 - `View setup notes`
 
@@ -202,6 +205,26 @@ http://10.88.0.1:4174/relay/ROUTE_NAME/
 The bare `/relay/` path deliberately returns `404`; the Home Agent UI and its
 administration API are local-only. They cannot be added as relay routes.
 
+Every named route is protected independently at three layers:
+
+- Caddy rejects `/relay` on public HTTPS before it reaches the agent.
+- UFW accepts TCP `4174` only on `tater0` from `10.88.0.0/24` and explicitly
+  denies that port on public interfaces.
+- The VPS Agent accepts a relay request only when its source is the exact `/32`
+  address of an active WireGuard peer. Revoking a peer also closes its active
+  relayed WebSocket sessions.
+
+Run the read-only security audit after installation or an update:
+
+```bash
+sudo /opt/tater-tunnel/scripts/audit-vps-security.sh \
+  --domain tunnel.example.com
+```
+
+The audit checks the service sandbox, private state permissions, pairing state,
+peer address scope, Caddy relay block, UFW rules, and an agent-level loopback
+relay rejection. It exits nonzero if a required boundary is missing.
+
 For example, add the main Tater app as a named route for its local URL:
 
 ```bash
@@ -245,6 +268,9 @@ You must provide:
 If you choose WireGuard relay access in the menu, the agent will listen for VPN
 clients too. In that case, allow TCP `4174` from the `tater0` interface only,
 not from the public internet.
+
+Use both an interface-specific allow and an explicit public deny. Do not use a
+plain `ufw allow 4174/tcp` rule.
 
 Example Caddy route for an existing Caddy setup:
 

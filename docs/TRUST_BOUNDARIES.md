@@ -70,6 +70,7 @@ Revoked device:
 
 - WireGuard peer is removed.
 - New relay connections from that peer address are rejected.
+- Existing relayed WebSocket sessions from that peer are closed immediately.
 
 ### Local Network Access
 
@@ -94,7 +95,13 @@ Required controls:
 - No local application credentials are stored on the VPS.
 - The Home Agent UI and administration API are never relay routes.
 - Public HTTPS requests to `/relay` are rejected.
-- Relay socket sources must match an active WireGuard peer address.
+- TCP `4174` is allowed only on the WireGuard interface and explicitly denied
+  on public interfaces.
+- Relay socket sources must exactly match an active WireGuard peer `/32` address.
+- Broad, out-of-network, invalid-key, and reserved-address peer records are
+  rejected or discarded when state is loaded.
+- Service startup reapplies the sanitized peer list to WireGuard; reset removes
+  both the generated configuration and the managed live interface.
 - Home Agent can rotate keys and reclaim to a new VPS.
 
 ### Stolen WireGuard Config

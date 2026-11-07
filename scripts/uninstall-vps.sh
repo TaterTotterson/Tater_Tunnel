@@ -205,6 +205,8 @@ remove_ufw_rules() {
 
   ufw --force delete allow 51888/udp >/dev/null 2>&1 || true
   ufw --force delete allow in on "$WIREGUARD_INTERFACE" to any port "$LISTEN_PORT" proto tcp >/dev/null 2>&1 || true
+  ufw --force delete allow in on "$WIREGUARD_INTERFACE" from 10.88.0.0/24 to 10.88.0.1 port "$LISTEN_PORT" proto tcp >/dev/null 2>&1 || true
+  ufw --force delete deny in to any port "$LISTEN_PORT" proto tcp >/dev/null 2>&1 || true
 }
 
 disable_caddy_proxy() {

@@ -42,6 +42,7 @@ MENU_ITEMS=(
   "Advanced existing VPS install"
   "Optional ZNC install"
   "Optional SFTPGo install/update"
+  "Audit VPS security"
   "Uninstall VPS install"
   "View setup notes"
   "Exit"
@@ -53,6 +54,7 @@ MENU_HELP=(
   "Installs only the Tater VPS Agent. You manage HTTPS, firewall, and proxy."
   "Installs ZNC for the sudo user with config stored in that user's home."
   "Installs or updates SFTPGo, enables it at boot, and optionally opens its ports."
+  "Checks relay isolation, Caddy, UFW, peer scope, permissions, and service hardening."
   "Removes the VPS Agent and app files, with optional state/config purge."
   "Shows the install notes and port checklist."
   "Leaves setup without changing anything."
@@ -86,6 +88,7 @@ This interactive launcher provides:
   - Advanced existing VPS install path
   - Optional ZNC install path
   - Optional SFTPGo install/update path
+  - Read-only VPS security audit
   - Uninstall path with optional data purge
   - Setup summary and progress handoff
 
@@ -345,6 +348,86 @@ EOF
 
   rm -f "$previous_file"
   systemctl reload caddy || systemctl restart caddy
+}
+
+harden_existing_tater_caddy() {
+  local listen_port="$1"
+  local caddyfile="/etc/caddy/Caddyfile"
+  local backend="127.0.0.1:${listen_port}"
+  local backup_file
+  local temp_file
+  local proxy_count
+  local backend_regex="127\\.0\\.0\\.1:${listen_port}"
+
+  if ! command -v caddy >/dev/null 2>&1 || [ ! -f "$caddyfile" ]; then
+    return 0
+  fi
+  if grep -Eq '^[[:space:]]*@public_relay[[:space:]]+path[[:space:]]+/relay[[:space:]]+/relay/\*[[:space:]]*$' "$caddyfile" \
+    && grep -Eq "^[[:space:]]*reverse_proxy[[:space:]]+${backend_regex}[[:space:]]*$" "$caddyfile"; then
+    return 0
+  fi
+
+  proxy_count="$(grep -Ec "^[[:space:]]*reverse_proxy[[:space:]]+${backend_regex}[[:space:]]*$" "$caddyfile" || true)"
+  if [ "$proxy_count" != "1" ]; then
+    printf '%sCould not safely edit the custom Caddyfile automatically.%s\n' "$ORANGE" "$RESET" >&2
+    printf '%sThe VPS Agent still rejects public relay sources; add the documented /relay matcher to Caddy manually.%s\n' "$DIM" "$RESET" >&2
+    return 0
+  fi
+
+  backup_file="$caddyfile.tater-security-backup-$(date +%Y%m%d%H%M%S)"
+  temp_file="$(mktemp /etc/caddy/.Caddyfile.tater-security.XXXXXX)"
+  cp -a "$caddyfile" "$backup_file"
+  awk -v backend="$backend" -v backend_regex="$backend_regex" '
+    $0 ~ "^[[:space:]]*reverse_proxy[[:space:]]+" backend_regex "[[:space:]]*$" {
+      match($0, /^[[:space:]]*/)
+      indent = substr($0, RSTART, RLENGTH)
+      print indent "@public_relay path /relay /relay/*"
+      print indent "handle @public_relay {"
+      print indent "  respond 404"
+      print indent "}"
+      print ""
+      print indent "handle {"
+      print indent "  reverse_proxy " backend
+      print indent "}"
+      next
+    }
+    { print }
+  ' "$caddyfile" > "$temp_file"
+
+  caddy fmt --overwrite "$temp_file" >/dev/null
+  if ! caddy validate --adapter caddyfile --config "$temp_file" >/dev/null; then
+    rm -f "$temp_file"
+    printf '%sThe hardened Caddy configuration did not validate; the existing file was left unchanged.%s\n' "$RED" "$RESET" >&2
+    return 1
+  fi
+
+  install -m 0644 "$temp_file" "$caddyfile"
+  rm -f "$temp_file"
+  if ! systemctl reload caddy; then
+    install -m 0644 "$backup_file" "$caddyfile"
+    systemctl reload caddy || systemctl restart caddy
+    printf '%sCaddy reload failed; the previous configuration was restored.%s\n' "$RED" "$RESET" >&2
+    return 1
+  fi
+  printf '%sPublic /relay paths are now blocked at Caddy.%s\n' "$GREEN" "$RESET"
+}
+
+harden_existing_tater_firewall() {
+  local listen_port="$1"
+
+  if ! command -v ufw >/dev/null 2>&1 || ! ufw status | grep -q '^Status: active'; then
+    return 0
+  fi
+
+  ufw --force delete allow "$listen_port/tcp" >/dev/null 2>&1 || true
+  ufw --force delete allow "$listen_port" >/dev/null 2>&1 || true
+  ufw --force delete allow in on tater0 to any port "$listen_port" proto tcp >/dev/null 2>&1 || true
+  ufw --force delete allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$listen_port" proto tcp >/dev/null 2>&1 || true
+  ufw --force delete deny in to any port "$listen_port" proto tcp >/dev/null 2>&1 || true
+  ufw allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$listen_port" proto tcp comment 'Tater Tunnel WireGuard relay'
+  ufw deny in to any port "$listen_port" proto tcp comment 'Block public Tater relay'
+  ufw reload >/dev/null
+  printf '%sTCP %s is allowed on tater0 and denied on public interfaces.%s\n' "$GREEN" "$listen_port" "$RESET"
 }
 
 ensure_sudo_available() {
@@ -892,6 +975,10 @@ EOF
   fi
 
   show_progress_handoff "Update progress will appear below." "${args[@]}"
+  harden_existing_tater_caddy "$listen_port"
+  if [ "$wg_relay_access" = "1" ]; then
+    harden_existing_tater_firewall "$listen_port"
+  fi
 }
 
 run_full_install() {
@@ -1419,6 +1506,47 @@ EOF
   show_progress_handoff "Uninstall progress will appear below." "${args[@]}"
 }
 
+run_security_audit() {
+  local exec_start
+  local listen_port="4174"
+  local state_file="/var/lib/tater-tunnel/vps-agent.json"
+  local config_file="/etc/tater-tunnel/wireguard/tater0.conf"
+  local state_dir="/var/lib/tater-tunnel"
+  local config_dir="/etc/tater-tunnel"
+  local domain
+  local args
+
+  clear_screen
+  print_logo
+  printf '\n%sVPS security audit%s\n\n' "$BOLD" "$RESET"
+
+  if [ -f "$SERVICE_FILE" ]; then
+    exec_start="$(service_value "ExecStart")"
+    listen_port="$(service_arg "$exec_start" "--port" "$listen_port")"
+    state_file="$(service_arg "$exec_start" "--state-file" "$state_file")"
+    config_file="$(service_arg "$exec_start" "--wireguard-config" "$config_file")"
+    state_dir="$(dirname "$state_file")"
+    config_dir="$(dirname "$(dirname "$config_file")")"
+  fi
+
+  domain="$(prompt_value "Public Tater hostname (blank skips HTTPS test)" "" no)"
+  args=(
+    "$SCRIPT_DIR/audit-vps-security.sh"
+    --listen-port "$listen_port"
+    --state-dir "$state_dir"
+    --config-dir "$config_dir"
+  )
+  if [ -n "$domain" ]; then
+    args+=(--domain "$domain")
+  fi
+
+  printf '\n'
+  if ! "${args[@]}"; then
+    printf '\n%sOne or more required security checks failed.%s\n' "$RED$BOLD" "$RESET"
+  fi
+  pause
+}
+
 view_notes() {
   clear_screen
   print_logo
@@ -1468,12 +1596,13 @@ main() {
         run_sftpgo_install
         exit 0
         ;;
-      5)
+      5) run_security_audit ;;
+      6)
         run_uninstall
         exit 0
         ;;
-      6) view_notes ;;
-      7)
+      7) view_notes ;;
+      8)
         clear_screen
         print_logo
         printf '\n%sNo changes made.%s\n' "$DIM" "$RESET"
