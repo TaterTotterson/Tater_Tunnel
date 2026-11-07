@@ -84,7 +84,8 @@ if [ -f "$SERVICE_FILE" ]; then
     'PrivateDevices=true' \
     'RestrictNamespaces=true' \
     'SocketBindDeny=any' \
-    "SocketBindAllow=tcp:${LISTEN_PORT}"; do
+    "SocketBindAllow=tcp:${LISTEN_PORT}" \
+    'SocketBindAllow=udp:51888'; do
     if grep -Fxq "$setting" "$SERVICE_FILE"; then
       pass "systemd has $setting"
     else

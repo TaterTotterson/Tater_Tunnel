@@ -34,6 +34,15 @@ class RecordingRunner:
 
 
 class WireGuardRuntimeTests(unittest.TestCase):
+    def test_vps_service_allows_only_agent_tcp_and_wireguard_udp(self):
+        installer = (
+            Path(__file__).parents[1] / "scripts" / "install-vps-agent.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("SocketBindDeny=any", installer)
+        self.assertIn("SocketBindAllow=tcp:$LISTEN_PORT", installer)
+        self.assertIn("SocketBindAllow=udp:51888", installer)
+
     def test_system_runtime_passes_setconf_over_stdin(self):
         state = {
             "claimed": True,
