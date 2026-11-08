@@ -430,6 +430,31 @@ run_sftpgo_install >/dev/null
                 ],
             )
 
+    def test_sftpgo_menu_preserves_existing_storage_cap(self):
+        setup = Path(__file__).parents[1] / "scripts" / "tater-vps-setup.sh"
+        harness = f'''
+set -Eeuo pipefail
+source "{setup}"
+DIALOG_ENABLED=1
+existing_sftpgo_storage_cap_gb() {{ printf '1303'; }}
+confirm() {{ printf 'storage prompt must not run\n' >&2; return 99; }}
+choose_sftpgo_storage_cap
+printf 'argument=%s\nsummary=%s\n' \
+  "$SFTPGO_STORAGE_CAP_RESULT" "$SFTPGO_STORAGE_CAP_SUMMARY"
+'''
+        completed = subprocess.run(
+            ["bash", "-c", harness],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            completed.stdout,
+            "argument=\nsummary=1303 GiB existing cap preserved\n",
+        )
+
     def test_vps_service_allows_only_agent_tcp_and_wireguard_udp(self):
         installer = (
             Path(__file__).parents[1] / "scripts" / "install-vps-agent.sh"

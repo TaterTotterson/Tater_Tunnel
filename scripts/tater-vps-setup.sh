@@ -449,12 +449,31 @@ suggest_sftpgo_storage_gb() {
   printf '%s' "$suggestion"
 }
 
+existing_sftpgo_storage_cap_gb() {
+  local image="/var/lib/sftpgo-storage/tater-data.img"
+  local size_bytes
+  local gib=$((1024 * 1024 * 1024))
+
+  [ -f "$image" ] || return 0
+  size_bytes="$(stat -c '%s' "$image" 2>/dev/null || true)"
+  [[ "$size_bytes" =~ ^[0-9]+$ ]] || return 0
+  printf '%s' "$(((size_bytes + gib - 1) / gib))"
+}
+
 choose_sftpgo_storage_cap() {
+  local existing_cap
   local suggested
   local value
   local status
 
   SFTPGO_STORAGE_CAP_RESULT=""
+  SFTPGO_STORAGE_CAP_SUMMARY="not installer-managed"
+  existing_cap="$(existing_sftpgo_storage_cap_gb)"
+  if [[ "$existing_cap" =~ ^[1-9][0-9]*$ ]]; then
+    SFTPGO_STORAGE_CAP_SUMMARY="${existing_cap} GiB existing cap preserved"
+    return 0
+  fi
+
   if ! confirm "Set a total cap for SFTPGo's default local storage" yes; then
     return 0
   fi
@@ -464,6 +483,7 @@ choose_sftpgo_storage_cap() {
     if value="$(prompt_value "Maximum SFTPGo storage in GiB" "$suggested" yes)"; then
       if [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
         SFTPGO_STORAGE_CAP_RESULT="$value"
+        SFTPGO_STORAGE_CAP_SUMMARY="${value} GiB total cap"
         return 0
       fi
       if [ "$DIALOG_ENABLED" = "1" ]; then
@@ -1931,7 +1951,7 @@ ${BOLD}Ready to install:${RESET}
   ZNC:         $([ "$install_znc" = "1" ] && printf '10.88.0.1:%s through WireGuard' "$znc_port" || printf 'not installed')
   SFTPGo:      $([ "$install_sftpgo" = "1" ] && printf 'selected protocols below' || printf 'not installed')
 $([ "$install_sftpgo" = "1" ] && printf '    SFTP:      %s\n    FTP:       %s\n    WebDAV:    %s\n' "$(sftpgo_access_label "$sftpgo_sftp_access" 2022)" "$(sftpgo_access_label "$sftpgo_ftp_access" 2121)" "$(sftpgo_access_label "$sftpgo_webdav_access" 10080 "$sftpgo_webdav_domain")")
-$([ -n "$sftpgo_storage_cap_gb" ] && printf '  SFTP storage: %s GiB total cap\n' "$sftpgo_storage_cap_gb")
+$([ "$install_sftpgo" = "1" ] && printf '  SFTP storage: %s\n' "$SFTPGO_STORAGE_CAP_SUMMARY")
   Cloudflare:  $cloudflare_summary
 
 EOF
@@ -2247,7 +2267,7 @@ ${BOLD}Ready to install or update SFTPGo:${RESET}
   Firewall:    matched to each selected access mode; disabled ports are blocked
   Login:       connect WireGuard, create the first admin, then enable TOTP
   Hardening:   defender enabled, strong passwords, exact version hidden
-  Storage:     $([ -n "$storage_cap_gb" ] && printf '%s GiB total cap' "$storage_cap_gb" || printf 'no installer-managed total cap')
+  Storage:     $SFTPGO_STORAGE_CAP_SUMMARY
   Cloudflare:  $cloudflare_summary
 
 EOF
@@ -2258,7 +2278,7 @@ WebDAV: $(sftpgo_access_label "$sftpgo_webdav_access" 10080 "$sftpgo_webdav_doma
 WebAdmin: http://10.88.0.1:8080/web/admin
 WebAdmin public access: blocked
 Cloudflare DNS: $cloudflare_summary
-Storage cap: $([ -n "$storage_cap_gb" ] && printf '%s GiB' "$storage_cap_gb" || printf 'not installer-managed')"; then
+Storage cap: $SFTPGO_STORAGE_CAP_SUMMARY"; then
     return 0
   fi
 

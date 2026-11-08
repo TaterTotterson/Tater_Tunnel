@@ -30,6 +30,8 @@
   saved SFTPGo environment after installation and shows the applied result.
 - The full-screen SFTPGo menu now proceeds directly from the optional storage
   cap into installation; canceling the cap safely continues without one.
+- SFTPGo updates now detect and preserve an existing managed storage image
+  instead of suggesting a smaller cap that the installer must safely reject.
 
 # Tater Tunnel v0.2.11
 
