@@ -28,6 +28,8 @@
   WebDAV HTTPS to become usable before reporting a successful installation.
 - The optional SFTPGo menu now verifies its selected protocol modes against the
   saved SFTPGo environment after installation and shows the applied result.
+- The full-screen SFTPGo menu now proceeds directly from the optional storage
+  cap into installation; canceling the cap safely continues without one.
 
 # Tater Tunnel v0.2.11
 

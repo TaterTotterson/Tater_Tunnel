@@ -423,30 +423,19 @@ prompt_port() {
   done
 }
 
-prompt_positive_integer() {
-  local label="$1"
-  local default_value="$2"
-  local value
-
-  while true; do
-    value="$(prompt_value "$label" "$default_value" yes)"
-    if [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
-      printf '%s' "$value"
-      return
-    fi
-    printf '%sEnter a whole number greater than zero.%s\n' "$RED" "$RESET" >&2
-  done
-}
-
 suggest_sftpgo_storage_gb() {
   local free_kb
   local free_gb
   local maximum_safe
   local suggestion
 
-  free_kb="$(df -Pk /srv 2>/dev/null | awk 'NR == 2 { print $4 }')"
+  free_kb="$(df -Pk /srv 2>/dev/null | awk 'NR == 2 { print $4 }' || true)"
   if ! [[ "$free_kb" =~ ^[0-9]+$ ]]; then
-    free_kb="$(df -Pk / | awk 'NR == 2 { print $4 }')"
+    free_kb="$(df -Pk / 2>/dev/null | awk 'NR == 2 { print $4 }' || true)"
+  fi
+  if ! [[ "$free_kb" =~ ^[0-9]+$ ]]; then
+    printf '1'
+    return
   fi
   free_gb=$((free_kb / 1024 / 1024))
   maximum_safe=$((free_gb - 2))
@@ -458,6 +447,41 @@ suggest_sftpgo_storage_gb() {
     suggestion="1"
   fi
   printf '%s' "$suggestion"
+}
+
+choose_sftpgo_storage_cap() {
+  local suggested
+  local value
+  local status
+
+  SFTPGO_STORAGE_CAP_RESULT=""
+  if ! confirm "Set a total cap for SFTPGo's default local storage" yes; then
+    return 0
+  fi
+
+  suggested="$(suggest_sftpgo_storage_gb)"
+  while true; do
+    if value="$(prompt_value "Maximum SFTPGo storage in GiB" "$suggested" yes)"; then
+      if [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
+        SFTPGO_STORAGE_CAP_RESULT="$value"
+        return 0
+      fi
+      if [ "$DIALOG_ENABLED" = "1" ]; then
+        dialog_message "Invalid storage cap" "Enter a whole number greater than zero."
+      else
+        printf '%sEnter a whole number greater than zero.%s\n' "$RED" "$RESET" >&2
+      fi
+      continue
+    else
+      status="$?"
+    fi
+
+    if [ "$status" = "130" ]; then
+      # Storage limits are optional. Cancel means continue without changing one.
+      return 0
+    fi
+    return "$status"
+  done
 }
 
 select_sftpgo_protocols() {
@@ -1868,9 +1892,8 @@ EOF
     install_sftpgo="1"
     select_sftpgo_protocols
     choose_sftpgo_access "$domain"
-    if confirm "Set a total cap for SFTPGo's default local storage" yes; then
-      sftpgo_storage_cap_gb="$(prompt_positive_integer "Maximum SFTPGo storage in GiB" "$(suggest_sftpgo_storage_gb)")"
-    fi
+    choose_sftpgo_storage_cap
+    sftpgo_storage_cap_gb="$SFTPGO_STORAGE_CAP_RESULT"
   fi
 
   if [ "$configure_firewall" != "1" ]; then
@@ -2191,9 +2214,8 @@ EOF
       cloudflare_summary="create DNS-only $sftpgo_webdav_domain in $cloudflare_zone"
     fi
   fi
-  if confirm "Set a total cap for SFTPGo's default local storage" yes; then
-    storage_cap_gb="$(prompt_positive_integer "Maximum SFTPGo storage in GiB" "$(suggest_sftpgo_storage_gb)")"
-  fi
+  choose_sftpgo_storage_cap
+  storage_cap_gb="$SFTPGO_STORAGE_CAP_RESULT"
 
   args=(
     "$SCRIPT_DIR/install-sftpgo.sh"
@@ -2230,7 +2252,7 @@ ${BOLD}Ready to install or update SFTPGo:${RESET}
 
 EOF
 
-  if ! confirm "Install or update SFTPGo now" yes "SFTP: $(sftpgo_access_label "$sftpgo_sftp_access" 2022)
+  if [ "$DIALOG_ENABLED" != "1" ] && ! confirm "Install or update SFTPGo now" yes "SFTP: $(sftpgo_access_label "$sftpgo_sftp_access" 2022)
 FTP: $(sftpgo_access_label "$sftpgo_ftp_access" 2121)
 WebDAV: $(sftpgo_access_label "$sftpgo_webdav_access" 10080 "$sftpgo_webdav_domain")
 WebAdmin: http://10.88.0.1:8080/web/admin

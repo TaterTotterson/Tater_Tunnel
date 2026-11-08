@@ -360,6 +360,76 @@ run_sftpgo_install >/dev/null
                     "verified:private:disabled:https:files.example.com",
                 ],
             )
+
+    def test_sftpgo_dialog_continues_from_storage_cap_to_installer(self):
+        setup = Path(__file__).parents[1] / "scripts" / "tater-vps-setup.sh"
+
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Path(directory) / "args.txt"
+            harness = f'''
+set -Eeuo pipefail
+source "{setup}"
+DIALOG_ENABLED=1
+CAPTURE="{capture}"
+require_root_for_install() {{ :; }}
+clear_screen() {{ :; }}
+print_logo() {{ :; }}
+select_sftpgo_protocols() {{
+  sftpgo_sftp_access="private"
+  sftpgo_ftp_access="disabled"
+  sftpgo_webdav_access="private"
+}}
+installed_tater_domain() {{ printf '%s' 'tunnel.example.com'; }}
+choose_sftpgo_access() {{
+  sftpgo_webdav_access="https"
+  sftpgo_webdav_domain="files.example.com"
+  sftpgo_insecure_public="0"
+}}
+confirm() {{
+  case "$1" in
+    "Set a total cap for SFTPGo's default local storage") return 0 ;;
+    "Install or update SFTPGo now") printf 'unexpected confirmation\n' >> "$CAPTURE"; return 1 ;;
+    *) return 1 ;;
+  esac
+}}
+suggest_sftpgo_storage_gb() {{ printf '25'; }}
+prompt_value() {{ printf '25'; }}
+show_progress_handoff() {{
+  shift
+  printf '%s\n' "$@" > "$CAPTURE"
+}}
+verify_sftpgo_selection_applied() {{
+  printf 'verified:%s:%s:%s:%s\n' "$1" "$2" "$3" "$4" >> "$CAPTURE"
+}}
+dialog_message() {{ :; }}
+run_sftpgo_install >/dev/null
+'''
+            completed = subprocess.run(
+                ["bash", "-c", harness],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(
+                capture.read_text(encoding="utf-8").splitlines(),
+                [
+                    str(setup.parent / "install-sftpgo.sh"),
+                    "--sftp-access",
+                    "private",
+                    "--ftp-access",
+                    "disabled",
+                    "--webdav-access",
+                    "https",
+                    "--webdav-domain",
+                    "files.example.com",
+                    "--max-storage-gb",
+                    "25",
+                    "verified:private:disabled:https:files.example.com",
+                ],
+            )
+
     def test_vps_service_allows_only_agent_tcp_and_wireguard_udp(self):
         installer = (
             Path(__file__).parents[1] / "scripts" / "install-vps-agent.sh"
