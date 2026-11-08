@@ -81,13 +81,58 @@ sudo python3 -B -m tater_tunnel.home_agent \
 
 #### Docker On Linux
 
+The image includes the Home Agent, Python runtime, `wireguard-tools`, and
+`wireguard-go`. Do not install WireGuard tools or run the Linux/Python command
+above when using Docker.
+
+Run the image directly:
+
+```bash
+docker run -d \
+  --name tater-tunnel-home \
+  --restart unless-stopped \
+  --cap-add NET_ADMIN \
+  --device /dev/net/tun:/dev/net/tun \
+  --network host \
+  -e TATER_TUNNEL_HOST=127.0.0.1 \
+  -e TATER_TUNNEL_WIREGUARD_BACKEND=system \
+  -v tater-tunnel-state:/data \
+  -v tater-tunnel-config:/config \
+  ghcr.io/tatertotterson/tater-tunnel:latest home
+```
+
+Then open `http://127.0.0.1:4173` on the Linux host.
+
+Or use the included Compose configuration from a repository checkout:
+
 ```bash
 docker compose up -d
 ```
 
-The container requires host networking, `NET_ADMIN`, and `/dev/net/tun`; these
-are already defined in `compose.yaml`. This mode is intended for a Linux Docker
-host, not Docker Desktop on macOS or Windows.
+Common commands:
+
+```bash
+# Follow Home Agent logs
+docker logs -f tater-tunnel-home
+
+# Update a Compose installation
+docker compose pull
+docker compose up -d
+
+# Stop or restart the container
+docker stop tater-tunnel-home
+docker start tater-tunnel-home
+```
+
+For a direct `docker run` installation, update by pulling the newest image,
+removing the old container, and running the command above again. The named
+`tater-tunnel-state` and `tater-tunnel-config` volumes preserve the setup.
+
+The Linux host only needs Docker and a working `/dev/net/tun` device. Host
+networking and the `NET_ADMIN` capability are supplied by the command above and
+are already defined in `compose.yaml`. No separate WireGuard app or host
+`wireguard-tools` installation is required. This mode is intended for a Linux
+Docker host, not Docker Desktop on macOS or Windows.
 
 ### 3. Pair The Home Agent
 
