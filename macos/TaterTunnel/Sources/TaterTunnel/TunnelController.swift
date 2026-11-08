@@ -34,6 +34,7 @@ enum TunnelState: Equatable {
 
 final class TunnelController: NSObject, OSSystemExtensionRequestDelegate {
     static let providerBundleIdentifier = "com.tatertotterson.tatertunnel.network-extension"
+    private static let configurationRevision = 2
 
     var onStateChange: ((TunnelState) -> Void)?
 
@@ -108,9 +109,7 @@ final class TunnelController: NSObject, OSSystemExtensionRequestDelegate {
 
         cleanedMissingConfiguration = false
         pendingConfiguration = configuration
-        let digest = SHA256.hash(data: Data(configuration.utf8))
-            .map { String(format: "%02x", $0) }
-            .joined()
+        let digest = Self.configurationDigest(for: configuration)
         if digest == appliedDigest, manager?.connection.status == .connected {
             state = .connected
             return
@@ -334,9 +333,7 @@ final class TunnelController: NSObject, OSSystemExtensionRequestDelegate {
             state = .waitingForPair
             return
         }
-        let digest = SHA256.hash(data: Data(configuration.utf8))
-            .map { String(format: "%02x", $0) }
-            .joined()
+        let digest = Self.configurationDigest(for: configuration)
         configureAndStartTunnel(configuration, digest: digest)
     }
 
@@ -344,6 +341,13 @@ final class TunnelController: NSObject, OSSystemExtensionRequestDelegate {
         activationInFlight = false
         activationFinished = false
         state = .failed(error.localizedDescription)
+    }
+
+    private static func configurationDigest(for configuration: String) -> String {
+        let hash = SHA256.hash(data: Data(configuration.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return "\(configurationRevision):\(hash)"
     }
 
     private static func endpoint(from configuration: String) -> String? {

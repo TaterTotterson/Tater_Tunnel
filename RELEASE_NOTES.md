@@ -1,4 +1,4 @@
-# Tater Tunnel v0.2.5
+# Tater Tunnel v0.2.6
 
 This patch fixes device QR enrollment being left on "Generating code" even
 though the VPS had already created the device.
@@ -11,4 +11,6 @@ though the VPS had already created the device.
   through the same tunnel without the VPS interrupting it.
 - The macOS app now detects a changed tunnel profile, stops the old Network
   Extension connection, and starts it again with the updated settings.
+- Existing Mac installs receive a one-time profile revision so an already-saved
+  update cannot leave the previous live tunnel running.
 - Existing pairing, routes, and approved devices are preserved during updates.
