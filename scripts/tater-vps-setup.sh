@@ -15,6 +15,10 @@ SERVICE_NAME="tater-tunnel-vps"
 SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME.service"
 ADMIN_USER="${TATER_TUNNEL_ADMIN_USER:-}"
 CREATED_ADMIN_USER="0"
+DIALOG_ENABLED="0"
+DIALOG_HEIGHT="23"
+DIALOG_WIDTH="79"
+CURRENT_DIALOG_TITLE="Tater Tunnel VPS Setup"
 
 if [ -f "$SCRIPT_DIR/install-vps-full.sh" ] && [ -f "$SCRIPT_DIR/install-vps-agent.sh" ] && [ -f "$SCRIPT_DIR/uninstall-vps.sh" ] && [ -f "$SCRIPT_DIR/install-znc.sh" ] && [ -f "$SCRIPT_DIR/install-sftpgo.sh" ] && [ -f "$SCRIPT_DIR/configure-cloudflare-dns.sh" ]; then
   IN_REPO_SOURCE="1"
@@ -119,6 +123,51 @@ clear_screen() {
   fi
 }
 
+set_dialog_dimensions() {
+  local lines="24"
+  local columns="80"
+
+  if command -v tput >/dev/null 2>&1; then
+    lines="$(tput lines 2>/dev/null || printf '24')"
+    columns="$(tput cols 2>/dev/null || printf '80')"
+  fi
+  [[ "$lines" =~ ^[0-9]+$ ]] || lines="24"
+  [[ "$columns" =~ ^[0-9]+$ ]] || columns="80"
+  [ "$lines" -ge 18 ] || lines="18"
+  [ "$columns" -ge 60 ] || columns="60"
+  DIALOG_HEIGHT=$((lines - 1))
+  DIALOG_WIDTH=$((columns - 1))
+}
+
+enable_dialog_ui() {
+  if [ "${TATER_TUNNEL_MENU:-}" = "numbered" ] || [ ! -t 0 ] || [ ! -t 1 ]; then
+    return
+  fi
+  if ! command -v dialog >/dev/null 2>&1 \
+    && [ "$(id -u)" -eq 0 ] \
+    && command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    if ! apt-get update >/dev/null || ! apt-get install -y dialog >/dev/null; then
+      return
+    fi
+  fi
+  if command -v dialog >/dev/null 2>&1; then
+    set_dialog_dimensions
+    DIALOG_ENABLED="1"
+  fi
+}
+
+dialog_message() {
+  local title="$1"
+  local message="$2"
+
+  set_dialog_dimensions
+  dialog --clear \
+    --backtitle "Tater Tunnel // VPS Setup Console" \
+    --title "$title" \
+    --msgbox "$message" "$DIALOG_HEIGHT" "$DIALOG_WIDTH"
+}
+
 print_logo() {
   printf '%s+------------------------------------------------------------------------------+%s\n' "$ORANGE$BOLD" "$RESET"
   printf '%s|%s %-76s %s|%s\n' "$ORANGE$BOLD" "$RESET$BOLD" "TATER TUNNEL // VPS SETUP CONSOLE" "$RESET$ORANGE$BOLD" "$RESET"
@@ -166,6 +215,11 @@ wizard_header() {
   local step_total="$2"
   local title="$3"
 
+  CURRENT_DIALOG_TITLE="Step $step_number of $step_total // $title"
+  if [ "$DIALOG_ENABLED" = "1" ]; then
+    clear_screen
+    return
+  fi
   clear_screen
   print_logo
   printf '| %-76.76s |\n' "STEP $step_number OF $step_total // ${title^^}"
@@ -173,6 +227,10 @@ wizard_header() {
 }
 
 pause() {
+  if [ "$DIALOG_ENABLED" = "1" ]; then
+    dialog_message "Continue" "Press Enter to continue."
+    return
+  fi
   printf '\n%sPress Enter to continue...%s' "$DIM" "$RESET"
   read -r _ || true
 }
@@ -400,6 +458,28 @@ configure_public_sftpgo_port() {
   ufw allow 2022/tcp comment 'SFTPGo SFTP'
 }
 
+configure_sftpgo_wireguard_webadmin() {
+  local env_dir="/etc/sftpgo/env.d"
+  local env_file="$env_dir/tater-tunnel.env"
+  local service_group="root"
+
+  if getent group sftpgo >/dev/null 2>&1; then
+    service_group="sftpgo"
+  fi
+  install -d -m 0750 -o root -g "$service_group" "$env_dir"
+  if [ -f "$env_file" ] && grep -q '^SFTPGO_HTTPD__BINDINGS__0__ADDRESS=' "$env_file"; then
+    sed -i 's/^SFTPGO_HTTPD__BINDINGS__0__ADDRESS=.*/SFTPGO_HTTPD__BINDINGS__0__ADDRESS=0.0.0.0/' "$env_file"
+  else
+    printf '\n# Tater Tunnel WireGuard-only WebAdmin listener.\nSFTPGO_HTTPD__BINDINGS__0__ADDRESS=0.0.0.0\n' >> "$env_file"
+  fi
+  chown root:"$service_group" "$env_file"
+  chmod 0640 "$env_file"
+  harden_optional_service_port 8080 "SFTPGo WebAdmin"
+  if systemctl is-active --quiet sftpgo.service; then
+    systemctl restart sftpgo.service
+  fi
+}
+
 installed_znc_ports() {
   local config
   local data_dir
@@ -415,6 +495,52 @@ installed_znc_ports() {
     config="${data_dir%/}/configs/znc.conf"
     [ -f "$config" ] || continue
     sed -nE 's/^[[:space:]]*Port[[:space:]]*=[[:space:]]*([0-9]+)[[:space:]]*$/\1/p' "$config"
+  done
+}
+
+migrate_installed_znc_webadmin() {
+  local service_file
+  local target_user
+  local data_dir
+  local config
+  local irc_port
+
+  for service_file in /etc/systemd/system/znc-*.service; do
+    [ -f "$service_file" ] || continue
+    target_user="$(sed -nE 's/^User=(.+)$/\1/p' "$service_file" | head -n 1)"
+    data_dir="$(sed -nE 's|^ExecStart=.*--datadir[= ]([^ ]+).*$|\1|p' "$service_file" | head -n 1)"
+    config="${data_dir%/}/configs/znc.conf"
+    [ -n "$target_user" ] && [ -n "$data_dir" ] && [ -f "$config" ] || continue
+    irc_port="$(awk '
+      /^[[:space:]]*<Listener([[:space:]][^>]*)?>[[:space:]]*$/ {
+        in_listener = 1
+        is_web = ($0 ~ /[[:space:]]tater-web[[:space:]]*>/)
+        allow_irc = 1
+        port = ""
+        next
+      }
+      in_listener && /^[[:space:]]*AllowIRC[[:space:]]*=[[:space:]]*false[[:space:]]*$/ { allow_irc = 0 }
+      in_listener && /^[[:space:]]*Port[[:space:]]*=/ {
+        line = $0
+        sub(/^[^=]*=[[:space:]]*/, "", line)
+        sub(/[[:space:]]*$/, "", line)
+        port = line
+      }
+      in_listener && /^[[:space:]]*<\/Listener>[[:space:]]*$/ {
+        if (!is_web && allow_irc && port ~ /^[0-9]+$/) {
+          print port
+          exit
+        }
+        in_listener = 0
+      }
+    ' "$config")"
+    irc_port="${irc_port:-6697}"
+    "$SCRIPT_DIR/install-znc.sh" \
+      --user "$target_user" \
+      --data-dir "$data_dir" \
+      --port "$irc_port" \
+      --web-listen-port 6698 \
+      --skip-packages
   done
 }
 
@@ -434,7 +560,9 @@ harden_installed_optional_services() {
     else
       harden_optional_service_port 2022 SFTPGo
     fi
+    configure_sftpgo_wireguard_webadmin
   fi
+  migrate_installed_znc_webadmin
   while read -r port; do
     if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
       harden_optional_service_port "$port" ZNC
@@ -566,6 +694,17 @@ harden_existing_tater_firewall() {
   ufw route allow in on tater0 out on tater0 from 10.88.0.0/24 to 10.88.0.2 port 30000:30999 proto udp comment 'Tater private UDP services'
   ufw reload >/dev/null
   printf '%sPrivate management and service forwarding rules were updated.%s\n' "$GREEN" "$RESET"
+}
+
+apply_update_hardening() {
+  local listen_port="$1"
+  local wg_management_access="$2"
+
+  harden_existing_tater_caddy "$listen_port"
+  if [ "$wg_management_access" = "1" ]; then
+    harden_existing_tater_firewall "$listen_port"
+  fi
+  harden_installed_optional_services
 }
 
 ensure_sudo_available() {
@@ -736,9 +875,9 @@ require_bootstrap_packages() {
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
     if [ -n "$TARBALL_URL" ]; then
-      apt-get install -y ca-certificates curl tar
+      apt-get install -y ca-certificates curl dialog tar
     else
-      apt-get install -y ca-certificates git
+      apt-get install -y ca-certificates dialog git
     fi
     return
   fi
@@ -856,6 +995,21 @@ prompt_value() {
   local value
 
   while true; do
+    if [ "$DIALOG_ENABLED" = "1" ]; then
+      set_dialog_dimensions
+      if ! value="$(dialog --stdout --clear \
+        --backtitle "Tater Tunnel // VPS Setup Console" \
+        --title "$CURRENT_DIALOG_TITLE" \
+        --inputbox "$label" "$DIALOG_HEIGHT" "$DIALOG_WIDTH" "$default_value")"; then
+        return 130
+      fi
+      if [ "$required" != "yes" ] || [ -n "$value" ]; then
+        printf '%s' "$value"
+        return
+      fi
+      dialog_message "Required value" "$label cannot be blank."
+      continue
+    fi
     if [ -n "$default_value" ]; then
       printf '\n%s%s%s [%s]\n> ' "$BOLD" "$label" "$RESET" "$default_value" >&2
     else
@@ -875,8 +1029,29 @@ prompt_value() {
 confirm() {
   local label="$1"
   local default="${2:-yes}"
+  local details="${3:-}"
+  local message="$label"
   local hint="[Y/n]"
   local reply
+
+  if [ "$DIALOG_ENABLED" = "1" ]; then
+    local -a default_option=()
+    if [ "$default" = "no" ]; then
+      default_option=(--defaultno)
+    fi
+    if [ -n "$details" ]; then
+      message="$details
+
+$label"
+    fi
+    set_dialog_dimensions
+    dialog --clear \
+      --backtitle "Tater Tunnel // VPS Setup Console" \
+      --title "$CURRENT_DIALOG_TITLE" \
+      "${default_option[@]}" \
+      --yesno "$message" "$DIALOG_HEIGHT" "$DIALOG_WIDTH"
+    return $?
+  fi
 
   if [ "$default" = "no" ]; then
     hint="[y/N]"
@@ -904,7 +1079,25 @@ print_stage() {
 show_progress_handoff() {
   local title="$1"
   local status
+  local -a pipeline_status
   shift
+
+  if [ "$DIALOG_ENABLED" = "1" ]; then
+    set_dialog_dimensions
+    set +e
+    "$@" 2>&1 | dialog --clear \
+      --backtitle "Tater Tunnel // VPS Setup Console" \
+      --title "$title" \
+      --programbox "$DIALOG_HEIGHT" "$DIALOG_WIDTH"
+    pipeline_status=("${PIPESTATUS[@]}")
+    set -e
+    status="${pipeline_status[0]}"
+    if [ "$status" = "0" ]; then
+      return 0
+    fi
+    dialog_message "Action failed" "The action stopped with exit code $status. Review the log above, correct the issue, and run setup again."
+    return "$status"
+  fi
 
   clear_screen
   print_logo
@@ -931,6 +1124,21 @@ show_progress_handoff() {
 show_pairing_completion() {
   local domain="$1"
   local pairing_code="$2"
+
+  if [ "$DIALOG_ENABLED" = "1" ]; then
+    dialog_message "Install complete" "VPS URL
+
+https://$domain
+
+ONE-TIME PAIRING CODE
+
+${pairing_code:-UNAVAILABLE}
+
+Open Tater Tunnel on your computer and enter the URL and code above.
+
+Keep this screen private. The code closes after the first successful pairing."
+    return
+  fi
 
   clear_screen
   print_logo
@@ -1072,8 +1280,52 @@ numbered_menu() {
   done
 }
 
+dialog_menu() {
+  local choice
+  local host_name
+  local install_state
+  local admin_user
+  local recommended
+  local index
+  local badge
+  local -a menu_args=()
+
+  host_name="$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf 'VPS')"
+  admin_user="$(console_admin_user)"
+  if [ -f "$SERVICE_FILE" ]; then
+    install_state="installed"
+  else
+    install_state="not installed"
+  fi
+  recommended="$(recommended_menu_index)"
+  for index in "${!MENU_ITEMS[@]}"; do
+    badge=""
+    if [ "$index" -eq "$recommended" ]; then
+      badge=" [recommended]"
+    fi
+    menu_args+=("$index" "${MENU_ITEMS[$index]}$badge" "${MENU_HELP[$index]}")
+  done
+
+  set_dialog_dimensions
+  if choice="$(dialog --stdout --clear \
+    --backtitle "Tater Tunnel // VPS Setup Console" \
+    --title "Main menu" \
+    --item-help \
+    --default-item "$recommended" \
+    --menu "Host: $host_name    Admin: $admin_user    Status: $install_state
+
+Use the arrow keys to choose an action, then press Enter." \
+    "$DIALOG_HEIGHT" "$DIALOG_WIDTH" 12 \
+    "${menu_args[@]}")"; then
+    return "$choice"
+  fi
+  return "$((${#MENU_ITEMS[@]} - 1))"
+}
+
 choose_menu() {
-  if [ "${TATER_TUNNEL_MENU:-}" = "numbered" ]; then
+  if [ "$DIALOG_ENABLED" = "1" ]; then
+    dialog_menu
+  elif [ "${TATER_TUNNEL_MENU:-}" = "numbered" ]; then
     numbered_menu
   elif [ -t 0 ]; then
     interactive_menu
@@ -1096,6 +1348,7 @@ run_update_install() {
   local args
   local wg_management_access="0"
 
+  CURRENT_DIALOG_TITLE="Update Tater Tunnel"
   require_root_for_install
   clear_screen
   print_logo
@@ -1170,16 +1423,15 @@ EOF
     args+=(--reopen-pairing)
   fi
 
-  if ! confirm "Start update now" yes; then
+  if ! confirm "Start update now" yes "Install directory: $install_dir
+Agent: http://$listen_host:$listen_port
+Pairing and WireGuard state: preserved
+Optional private services: checked and migrated"; then
     return 0
   fi
 
   show_progress_handoff "Update progress will appear below." "${args[@]}"
-  harden_existing_tater_caddy "$listen_port"
-  if [ "$wg_management_access" = "1" ]; then
-    harden_existing_tater_firewall "$listen_port"
-  fi
-  harden_installed_optional_services
+  show_progress_handoff "Applying private-service migrations." apply_update_hardening "$listen_port" "$wg_management_access"
 }
 
 run_full_install() {
@@ -1193,6 +1445,7 @@ run_full_install() {
   local install_znc="0"
   local znc_user=""
   local znc_port="6697"
+  local znc_web_port="6698"
   local znc_makeconf="0"
   local znc_args
   local install_sftpgo="0"
@@ -1205,6 +1458,7 @@ run_full_install() {
   local cloudflare_args
   local final_pairing_code
 
+  CURRENT_DIALOG_TITLE="Install on a blank VPS"
   handle_root_login_for_blank_vps
   require_root_for_install
   wizard_header "1" "4" "Core VPS settings"
@@ -1242,7 +1496,7 @@ EOF
     configure_firewall="0"
   fi
 
-  printf '\n%s  STEP 2 OF 4%s  %sOptional services%s\n\n' "$CYAN$BOLD" "$RESET" "$BOLD" "$RESET"
+  wizard_header "2" "4" "Optional services"
 
   if [ "$configure_firewall" = "1" ] && confirm "Install optional ZNC IRC bouncer" no; then
     install_znc="1"
@@ -1309,7 +1563,12 @@ $([ -n "$sftpgo_storage_cap_gb" ] && printf '  SFTP storage: %s GiB total cap\n'
   Cloudflare:  $([ "$configure_cloudflare" = "1" ] && printf 'create the tunnel DNS record in %s' "$cloudflare_zone" || printf 'manual DNS setup')
 
 EOF
-  if ! confirm "Start install now" yes; then
+  if ! confirm "Start install now" yes "Domain: $domain
+HTTPS: automatic Caddy certificate
+WireGuard: UDP 51888
+Firewall: $([ "$configure_firewall" = "1" ] && printf 'managed by setup' || printf 'unchanged')
+ZNC: $([ "$install_znc" = "1" ] && printf 'IRC %s and WebAdmin %s through WireGuard' "$znc_port" "$znc_web_port" || printf 'not installed')
+SFTPGo: $([ "$install_sftpgo" = "1" ] && { [ "$sftpgo_public" = "1" ] && printf 'public SFTP; private WebAdmin' || printf 'WireGuard-only SFTP and WebAdmin'; } || printf 'not installed')"; then
     if [ "$CREATED_ADMIN_USER" = "1" ]; then
       print_relogin_instructions "$ADMIN_USER"
     fi
@@ -1331,7 +1590,7 @@ EOF
   show_progress_handoff "Package/service progress will appear below." "${args[@]}"
 
   if [ "$install_znc" = "1" ]; then
-    znc_args=("$SCRIPT_DIR/install-znc.sh" --user "$znc_user" --port "$znc_port")
+    znc_args=("$SCRIPT_DIR/install-znc.sh" --user "$znc_user" --port "$znc_port" --web-listen-port "$znc_web_port")
     if [ "$znc_makeconf" = "1" ]; then
       znc_args+=(--makeconf)
     fi
@@ -1340,8 +1599,8 @@ EOF
 
 ZNC connection:
   Connect WireGuard first.
-  Host: 10.88.0.1
-  Port: $znc_port
+  IRC:      10.88.0.1:$znc_port
+  WebAdmin: http://10.88.0.1:$znc_web_port/
 
 EOF
   fi
@@ -1360,6 +1619,7 @@ EOF
 SFTPGo connection:
   $([ "$sftpgo_public" = "1" ] && printf 'Host: your VPS public IP or your own DNS hostname' || printf 'Connect WireGuard first.\n  Host: 10.88.0.1')
   Port: 2022
+  WebAdmin: http://10.88.0.1:8080/web/admin
 
 EOF
   fi
@@ -1375,6 +1635,7 @@ run_advanced_install() {
   local args
   local wireguard_management_access="0"
 
+  CURRENT_DIALOG_TITLE="Advanced agent install"
   require_root_for_install
   clear_screen
   print_logo
@@ -1421,7 +1682,9 @@ and open 51888/udp for WireGuard devices.
 $([ "$wireguard_management_access" = "1" ] && printf 'Allow TCP %s only from 10.88.0.2 on the tater0 interface.\n' "$listen_port")
 
 EOF
-  if ! confirm "Start install now" yes; then
+  if ! confirm "Start install now" yes "Agent: http://$listen_host:$listen_port
+Caddy and firewall: unchanged
+WireGuard management: $([ "$wireguard_management_access" = "1" ] && printf 'enabled' || printf 'disabled')"; then
     return 0
   fi
   show_progress_handoff "Agent install progress will appear below." "${args[@]}"
@@ -1430,9 +1693,11 @@ EOF
 run_znc_install() {
   local target_user
   local znc_port
+  local znc_web_port="6698"
   local run_makeconf="0"
   local args
 
+  CURRENT_DIALOG_TITLE="Install ZNC"
   handle_root_login_for_user_addon
   require_root_for_install
   clear_screen
@@ -1470,7 +1735,7 @@ EOF
   if confirm "Run ZNC interactive config wizard now" yes; then
     run_makeconf="1"
   fi
-  args=("$SCRIPT_DIR/install-znc.sh" --user "$target_user" --port "$znc_port")
+  args=("$SCRIPT_DIR/install-znc.sh" --user "$target_user" --port "$znc_port" --web-listen-port "$znc_web_port")
   if [ "$run_makeconf" = "1" ]; then
     args+=(--makeconf)
   fi
@@ -1482,12 +1747,16 @@ ${BOLD}Ready to install ZNC:${RESET}
   User:        $target_user
   Config:      ~${target_user}/.znc
   Port:        $znc_port/tcp
+  WebAdmin:    http://10.88.0.1:$znc_web_port/
   Make config: $([ "$run_makeconf" = "1" ] && printf 'run now' || printf 'print command for later')
   Access:      10.88.0.1:$znc_port through WireGuard only
 
 EOF
 
-  if ! confirm "Install ZNC now" yes; then
+  if ! confirm "Install ZNC now" yes "User: $target_user
+IRC: 10.88.0.1:$znc_port
+WebAdmin: http://10.88.0.1:$znc_web_port/
+Public access: blocked"; then
     if [ "$CREATED_ADMIN_USER" = "1" ]; then
       print_relogin_instructions "$ADMIN_USER"
     fi
@@ -1506,6 +1775,7 @@ run_sftpgo_install() {
   local storage_cap_gb=""
   local args
 
+  CURRENT_DIALOG_TITLE="Install or update SFTPGo"
   require_root_for_install
   clear_screen
   print_logo
@@ -1517,7 +1787,7 @@ service at boot. Running it again updates SFTPGo while preserving its existing
 configuration, users, and files.
 
 SFTP can be limited to Tater Tunnel WireGuard or opened publicly for separate
-SFTPGo users. WebAdmin always stays on localhost behind an SSH forward.
+SFTPGo users. WebAdmin is available only while connected through WireGuard.
 
 EOF
 
@@ -1544,15 +1814,18 @@ ${BOLD}Ready to install or update SFTPGo:${RESET}
   Edition:     Open source (current stable release)
   Service:     enabled at boot
   SFTP:        $([ "$public_sftp" = "1" ] && printf 'public port 2022/tcp' || printf '10.88.0.1:2022 through WireGuard only')
-  WebAdmin:    http://127.0.0.1:8080/web/admin
+  WebAdmin:    http://10.88.0.1:8080/web/admin (WireGuard only)
   Firewall:    $([ "$public_sftp" = "1" ] && printf 'public 2022/tcp allowed' || printf 'public 2022/tcp blocked')
-  Login:       first admin through an SSH tunnel; enable TOTP after login
+  Login:       connect WireGuard, create the first admin, then enable TOTP
   Hardening:   defender enabled, strong passwords, exact version hidden
   Storage:     $([ -n "$storage_cap_gb" ] && printf '%s GiB total cap' "$storage_cap_gb" || printf 'no installer-managed total cap')
 
 EOF
 
-  if ! confirm "Install or update SFTPGo now" yes; then
+  if ! confirm "Install or update SFTPGo now" yes "SFTP: $([ "$public_sftp" = "1" ] && printf 'public TCP 2022' || printf 'WireGuard-only at 10.88.0.1:2022')
+WebAdmin: http://10.88.0.1:8080/web/admin
+WebAdmin public access: blocked
+Storage cap: $([ -n "$storage_cap_gb" ] && printf '%s GiB' "$storage_cap_gb" || printf 'not installer-managed')"; then
     return 0
   fi
 
@@ -1566,6 +1839,7 @@ run_uninstall() {
   local remove_ufw_rules="1"
   local disable_caddy_proxy="0"
 
+  CURRENT_DIALOG_TITLE="Uninstall Tater Tunnel"
   require_root_for_install
   clear_screen
   print_logo
@@ -1620,7 +1894,10 @@ uninstalled automatically.
 
 EOF
 
-  if ! confirm "Uninstall now" no; then
+  if ! confirm "Uninstall now" no "Service and app: removed
+State and config: $([ "$purge_data" = "1" ] && printf 'purged' || printf 'kept')
+Downloaded source: $([ "$remove_source" = "1" ] && printf 'removed' || printf 'kept')
+Firewall: $([ "$remove_ufw_rules" = "1" ] && printf 'Tater rules removed' || printf 'unchanged')"; then
     return 0
   fi
 
@@ -1637,6 +1914,7 @@ run_security_audit() {
   local domain
   local args
 
+  CURRENT_DIALOG_TITLE="VPS security audit"
   clear_screen
   print_logo
   printf '\n%sVPS security audit%s\n\n' "$BOLD" "$RESET"
@@ -1661,14 +1939,26 @@ run_security_audit() {
     args+=(--domain "$domain")
   fi
 
-  printf '\n'
-  if ! "${args[@]}"; then
-    printf '\n%sOne or more required security checks failed.%s\n' "$RED$BOLD" "$RESET"
+  if [ "$DIALOG_ENABLED" = "1" ]; then
+    show_progress_handoff "VPS security audit" "${args[@]}" || true
+  else
+    printf '\n'
+    if ! "${args[@]}"; then
+      printf '\n%sOne or more required security checks failed.%s\n' "$RED$BOLD" "$RESET"
+    fi
+    pause
   fi
-  pause
 }
 
 view_notes() {
+  if [ "$DIALOG_ENABLED" = "1" ]; then
+    set_dialog_dimensions
+    dialog --clear \
+      --backtitle "Tater Tunnel // VPS Setup Console" \
+      --title "VPS setup notes" \
+      --textbox "$DOC_FILE" "$DIALOG_HEIGHT" "$DIALOG_WIDTH"
+    return
+  fi
   clear_screen
   print_logo
   printf '\n'
@@ -1685,6 +1975,7 @@ main() {
 
   parse_args "$@"
   bootstrap_source_if_needed
+  enable_dialog_ui
 
   if [ "$NO_RUN" = "1" ]; then
     printf '%sSetup menu is ready at:%s %s\n' "$GREEN" "$RESET" "$SCRIPT_DIR/tater-vps-setup.sh"

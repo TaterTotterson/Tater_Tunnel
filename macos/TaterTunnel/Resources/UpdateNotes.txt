@@ -1,1 +1,1 @@
-Fixes device QR enrollment by preserving the live Home Agent peer during device changes and reliably reloading updated macOS tunnel settings.
+Adds a full-screen VPS setup console and WireGuard-only browser access for the SFTPGo and ZNC administration pages.

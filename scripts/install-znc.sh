@@ -6,7 +6,8 @@ ZNC_PORT="6697"
 DATA_DIR=""
 RUN_MAKECONF="0"
 START_SERVICE="1"
-WEB_LISTEN_PORT=""
+WEB_LISTEN_PORT="6698"
+SKIP_PACKAGES="0"
 
 usage() {
   cat <<'EOF'
@@ -25,8 +26,8 @@ Options:
   --data-dir PATH    ZNC data directory. Default: /home/USER/.znc
   --makeconf         Run ZNC's interactive config wizard during install.
   --web-listen-port PORT
-                     Add a web-only listener on 127.0.0.1 for a local reverse
-                     proxy. The port is not opened in UFW.
+                     Private WireGuard-only WebAdmin port. Default: 6698
+  --skip-packages    Do not run apt; use the currently installed ZNC package.
   --no-start         Do not start/restart the systemd service.
   -h, --help         Show this help.
 EOF
@@ -53,6 +54,10 @@ while [ "$#" -gt 0 ]; do
     --web-listen-port)
       WEB_LISTEN_PORT="${2:?--web-listen-port requires a value}"
       shift 2
+      ;;
+    --skip-packages)
+      SKIP_PACKAGES="1"
+      shift
       ;;
     --no-start)
       START_SERVICE="0"
@@ -129,6 +134,13 @@ require_systemd() {
 }
 
 install_packages() {
+  if [ "$SKIP_PACKAGES" = "1" ]; then
+    if ! command -v znc >/dev/null 2>&1; then
+      echo "ZNC is not installed; rerun without --skip-packages." >&2
+      exit 1
+    fi
+    return
+  fi
   if ! command -v apt-get >/dev/null 2>&1; then
     echo "This installer currently supports Debian/Ubuntu systems with apt-get." >&2
     exit 1
@@ -194,13 +206,13 @@ configure_private_web_listener() {
   fi
 
   if [ ! -f "$config_file" ]; then
-    cat <<EOF >&2
-Cannot add the private ZNC WebAdmin listener because no config exists at:
+    cat <<EOF
+The private ZNC WebAdmin listener will be added after a config exists at:
   $config_file
 
-Run the installer with --makeconf, or create the ZNC config first and rerun it.
+Create the ZNC config, then rerun this installer.
 EOF
-    exit 1
+    return
   fi
 
   stripped_file="$(mktemp)"
@@ -223,21 +235,20 @@ EOF
     { print }
   ' "$config_file" > "$stripped_file"
 
-  awk -v irc_port="$ZNC_PORT" '
+  awk '
     function flush_listener(    i, line) {
       for (i = 1; i <= line_count; i++) {
         line = listener_lines[i]
-        if (target_listener && line ~ /^[[:space:]]*AllowWeb[[:space:]]*=/) {
+        if (line ~ /^[[:space:]]*AllowWeb[[:space:]]*=/) {
           sub(/=.*/, "= false", line)
         }
-        if (target_listener && !has_allow_web && line ~ /^[[:space:]]*<\/Listener>[[:space:]]*$/) {
+        if (!has_allow_web && line ~ /^[[:space:]]*<\/Listener>[[:space:]]*$/) {
           print "\tAllowWeb = false"
         }
         print line
       }
       delete listener_lines
       line_count = 0
-      target_listener = 0
       has_allow_web = 0
       in_listener = 0
     }
@@ -248,9 +259,6 @@ EOF
     }
     in_listener {
       listener_lines[++line_count] = $0
-      if ($0 ~ "^[[:space:]]*Port[[:space:]]*=[[:space:]]*" irc_port "[[:space:]]*$") {
-        target_listener = 1
-      }
       if ($0 ~ /^[[:space:]]*AllowWeb[[:space:]]*=/) {
         has_allow_web = 1
       }
@@ -292,7 +300,7 @@ EOF
       print "<Listener tater-web>"
       print "\tAllowIRC = false"
       print "\tAllowWeb = true"
-      print "\tHost = 127.0.0.1"
+      print "\tHost = 0.0.0.0"
       print "\tIPv4 = true"
       print "\tIPv6 = false"
       print "\tPort = " web_port
@@ -369,6 +377,12 @@ configure_firewall() {
   ufw --force delete deny in to any port "$ZNC_PORT" proto tcp >/dev/null 2>&1 || true
   ufw allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$ZNC_PORT" proto tcp comment 'ZNC private WireGuard'
   ufw deny in to any port "$ZNC_PORT" proto tcp comment 'Block public ZNC'
+  ufw --force delete allow "$WEB_LISTEN_PORT/tcp" >/dev/null 2>&1 || true
+  ufw --force delete allow "$WEB_LISTEN_PORT" >/dev/null 2>&1 || true
+  ufw --force delete allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$WEB_LISTEN_PORT" proto tcp >/dev/null 2>&1 || true
+  ufw --force delete deny in to any port "$WEB_LISTEN_PORT" proto tcp >/dev/null 2>&1 || true
+  ufw allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$WEB_LISTEN_PORT" proto tcp comment 'ZNC WebAdmin private WireGuard'
+  ufw deny in to any port "$WEB_LISTEN_PORT" proto tcp comment 'Block public ZNC WebAdmin'
   ufw reload >/dev/null
 }
 
@@ -423,14 +437,14 @@ Use port $ZNC_PORT in the ZNC config if you want the firewall helper to match.
 EOF
   fi
 
-  if [ -n "$WEB_LISTEN_PORT" ]; then
+  if [ -f "$DATA_DIR/configs/znc.conf" ]; then
     cat <<EOF
 Private WebAdmin listener:
-  http://127.0.0.1:$WEB_LISTEN_PORT
+  http://10.88.0.1:$WEB_LISTEN_PORT/
 
-This port is bound to localhost and was not opened in UFW. Reach it through an
-SSH port forward when WebAdmin is needed. The listener on $ZNC_PORT was limited
-to IRC traffic only. Web sessions are protected and the version is hidden.
+Connect Tater Tunnel WireGuard before opening WebAdmin. The listener on
+$ZNC_PORT is limited to IRC traffic only. Web sessions are protected and the
+version is hidden.
 
 EOF
   fi
@@ -439,6 +453,8 @@ EOF
 Firewall:
   Allowed $ZNC_PORT/tcp only from 10.88.0.0/24 on tater0.
   Blocked public access to $ZNC_PORT/tcp.
+  Allowed $WEB_LISTEN_PORT/tcp only through WireGuard for WebAdmin.
+  Blocked public access to $WEB_LISTEN_PORT/tcp.
 
 EOF
 }

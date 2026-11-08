@@ -88,11 +88,7 @@ check_sftpgo_port() {
   else
     check_private_optional_port "$added" 2022 SFTPGo
   fi
-  if grep -Eq '^ufw allow (8080|8080/tcp)([[:space:]]|$)' <<< "$added"; then
-    fail "SFTPGo WebAdmin TCP 8080 is publicly allowed"
-  else
-    pass "SFTPGo WebAdmin has no public TCP 8080 allow rule"
-  fi
+  check_private_optional_port "$added" 8080 "SFTPGo WebAdmin"
 }
 
 installed_znc_ports() {

@@ -370,8 +370,8 @@ configure_tater_defaults() {
   install -d -m 0750 -o root -g "$service_group" "$env_dir"
   cat > "$env_file" <<'EOF'
 # Managed by the Tater Tunnel SFTPGo installer.
-# Keep WebAdmin private and make a future localhost reverse proxy client-aware.
-SFTPGO_HTTPD__BINDINGS__0__ADDRESS=127.0.0.1
+# Listen on the host while UFW limits WebAdmin to the Tater WireGuard interface.
+SFTPGO_HTTPD__BINDINGS__0__ADDRESS=0.0.0.0
 SFTPGO_HTTPD__BINDINGS__0__PROXY_ALLOWED=127.0.0.1/32,::1/128
 SFTPGO_HTTPD__BINDINGS__0__CLIENT_IP_PROXY_HEADER=X-Forwarded-For
 SFTPGO_HTTPD__BINDINGS__0__SECURITY__ENABLED=true
@@ -410,6 +410,13 @@ configure_firewall() {
     ufw allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$SFTP_PORT" proto tcp comment 'SFTPGo private WireGuard'
     ufw deny in to any port "$SFTP_PORT" proto tcp comment 'Block public SFTPGo'
   fi
+
+  ufw --force delete allow "$WEB_PORT/tcp" >/dev/null 2>&1 || true
+  ufw --force delete allow "$WEB_PORT" >/dev/null 2>&1 || true
+  ufw --force delete allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$WEB_PORT" proto tcp >/dev/null 2>&1 || true
+  ufw --force delete deny in to any port "$WEB_PORT" proto tcp >/dev/null 2>&1 || true
+  ufw allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$WEB_PORT" proto tcp comment 'SFTPGo WebAdmin private WireGuard'
+  ufw deny in to any port "$WEB_PORT" proto tcp comment 'Block public SFTPGo WebAdmin'
   ufw reload >/dev/null
 }
 
@@ -451,21 +458,20 @@ SFTP clients:
   $([ "$PUBLIC_SFTP" = "1" ] && printf 'Host: your VPS public IP or your own DNS hostname' || printf 'Connect WireGuard first.\n  Host: 10.88.0.1')
   Port: $SFTP_PORT
 
-First WebAdmin setup from your PC:
-  ssh -L $WEB_PORT:127.0.0.1:$WEB_PORT YOUR_SUDO_USER@YOUR_VPS
-  Open http://127.0.0.1:$WEB_PORT/web/admin
+First WebAdmin setup:
+  Connect Tater Tunnel WireGuard, then open:
+  http://10.88.0.1:$WEB_PORT/web/admin
 
-The SSH-forward command keeps the unconfigured admin page off the public
-internet. Keep that SSH session open while using WebAdmin.
+UFW keeps the unconfigured admin page off the public internet.
 
 Login setup:
-  - Create the first admin through the SSH-forwarded WebAdmin page.
+  - Create the first admin through the WireGuard-only WebAdmin page.
   - Use a unique strong password; the installer enforces a minimum strength.
   - Enable TOTP two-factor authentication from the admin profile after login.
   - Create separate SFTP users and prefer SSH public keys where practical.
 
 Recommended defaults:
-  - WebAdmin is bound to 127.0.0.1:$WEB_PORT only.
+  - WebAdmin is reachable only through Tater Tunnel WireGuard.
   - Defender automatically blocks repeated failed login attempts.
   - The SFTP banner hides the exact SFTPGo version.
   - Local reverse proxies can pass the real client address safely.
@@ -484,7 +490,7 @@ SFTPGo paths:
 
 Firewall:
   $([ "$PUBLIC_SFTP" = "1" ] && printf 'Allowed public %s/tcp for SFTP clients.' "$SFTP_PORT" || printf 'Allowed %s/tcp only through WireGuard and blocked it publicly.' "$SFTP_PORT")
-  Kept the web interface private; no rule was added for $WEB_PORT/tcp.
+  Allowed WebAdmin on $WEB_PORT/tcp only through WireGuard and blocked it publicly.
 
 EOF
 }

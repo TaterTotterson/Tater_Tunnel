@@ -208,16 +208,17 @@ Caddy exposure, and UFW routing.
 
 The menu can install ZNC for the selected sudo user. Its config remains under
 that user's home directory and the service starts at boot. The installer removes
-the old public Caddy subdomain route, allows the selected ZNC port only through
-`tater0`, and explicitly blocks that port on the public interface.
+the old public Caddy subdomain route, keeps IRC and WebAdmin behind `tater0`, and
+explicitly blocks both ports on the public interface.
 
 ```bash
 sudo ./scripts/install-znc.sh --user tater --makeconf
 ```
 
-Connect WireGuard first, then use `10.88.0.1` and the selected ZNC port. The ZNC
-username and password created by its wizard remain a second security gate; use
-TLS and a unique password.
+Connect WireGuard first, then use `10.88.0.1` and the selected ZNC IRC port.
+Open WebAdmin at `http://10.88.0.1:6698/`. The ZNC username and password created
+by its wizard remain a second security gate; use TLS for IRC and a unique
+password.
 
 ## Optional SFTPGo
 
@@ -232,21 +233,16 @@ sudo ./scripts/install-sftpgo.sh \
 This defaults to WireGuard-only SFTP at `10.88.0.1:2022`. Add `--public-sftp`,
 or choose public access in the guided menu, when separate users need to connect
 with the VPS public IP or their own DNS hostname. This is SFTP, not legacy FTP.
-WebAdmin remains bound to `127.0.0.1:8080` in either mode.
+WebAdmin remains WireGuard-only in either mode.
 
 The optional cap creates a sparse ext4 image at
 `/var/lib/sftpgo-storage/tater-data.img`, mounted at `/srv/sftpgo/data` with
 `nosuid`, `nodev`, and `noexec`. It can grow to the selected limit but is never
 shrunk automatically.
 
-Open the initial WebAdmin through SSH:
-
-```bash
-ssh -L 8080:127.0.0.1:8080 tater@YOUR_VPS
-```
-
-Then visit `http://127.0.0.1:8080/web/admin`. Prefer SSH public keys for SFTP
-users and enable TOTP for administrators.
+Connect Tater Tunnel WireGuard, then visit
+`http://10.88.0.1:8080/web/admin`. Prefer SSH public keys for SFTP users and
+enable TOTP for administrators. UFW blocks the admin page on public interfaces.
 
 ## Service Commands
 

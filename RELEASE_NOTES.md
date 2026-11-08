@@ -1,31 +1,30 @@
-# Tater Tunnel v0.2.10
+# Tater Tunnel v0.2.11
 
-This update simplifies optional-service exposure while keeping each service's
-intended audience in mind.
+This update makes VPS setup easier to follow and gives optional services
+reliable browser interfaces without exposing their administration pages.
 
-## Optional service access
+## Full-screen VPS setup
 
-- SFTPGo setup now asks whether TCP `2022` should be WireGuard-only or public
-  for separate users. WireGuard-only is the secure default.
-- Public mode uses SFTP with individual SFTPGo accounts. Legacy FTP is not
-  enabled.
-- SFTPGo WebAdmin remains private on `127.0.0.1:8080` for SSH-forwarded setup.
-- ZNC is available at `10.88.0.1` on the listener port selected during setup.
-- The installer no longer asks for ZNC or SFTP subdomains or offers to open
-  optional ports through additional prompts.
-- UFW keeps ZNC WireGuard-only and applies the selected SFTPGo access mode while
-  leaving WebAdmin private.
-- The update path removes the retired public ZNC Caddy route and replaces old
-  optional-service firewall rules while preserving an existing public/private
-  SFTPGo choice.
-- The VPS security audit now checks these optional-service boundaries.
+- The guided installer now uses the proven `dialog` ncurses interface for its
+  main menu, prompts, confirmation screens, live logs, setup notes, and final
+  pairing screen.
+- Arrow-key navigation and contextual help replace the hand-drawn menu.
+- A numbered text fallback remains available for noninteractive terminals and
+  recovery use.
+- Review screens summarize the selected network and service boundaries before
+  setup changes anything.
 
-## Simpler VPS console
+## Private optional-service administration
 
-- The setup launcher now uses a full-screen, old-school terminal menu with a
-  compact system line, highlighted selection, and contextual help footer.
-- Install progress uses the same fixed-width console styling.
-- A successful first install clears the log and shows only the VPS URL,
-  one-time pairing code, and the next pairing step.
-- Port references, service commands, SSH hardening, and troubleshooting remain
-  available in the GitHub README and VPS install guide.
+- SFTPGo WebAdmin is now available at
+  `http://10.88.0.1:8080/web/admin` while connected through Tater Tunnel
+  WireGuard.
+- ZNC now uses a dedicated WebAdmin listener at
+  `http://10.88.0.1:6698/`, fixing blank browser responses from its IRC
+  listener.
+- UFW explicitly allows both WebAdmin listeners only on `tater0` and blocks
+  their ports on public interfaces.
+- ZNC IRC remains on the selected listener port, separate from WebAdmin.
+- The normal update path migrates existing SFTPGo and ZNC installs to these
+  private listeners and preserves SFTPGo's public or WireGuard-only SFTP mode.
+- The VPS security audit verifies the new WireGuard-only firewall boundaries.

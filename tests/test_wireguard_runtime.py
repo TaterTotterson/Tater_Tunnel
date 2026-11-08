@@ -200,6 +200,13 @@ class WireGuardRuntimeTests(unittest.TestCase):
         self.assertIn("Allow SFTPGo users to connect from the public internet", setup)
         self.assertIn('ufw allow "$SFTP_PORT/tcp"', sftpgo)
         self.assertIn("Block public SFTPGo", sftpgo)
+        self.assertIn("SFTPGO_HTTPD__BINDINGS__0__ADDRESS=0.0.0.0", sftpgo)
+        self.assertIn("SFTPGo WebAdmin private WireGuard", sftpgo)
+        self.assertIn("Block public SFTPGo WebAdmin", sftpgo)
+        self.assertIn('WEB_LISTEN_PORT="6698"', znc)
+        self.assertIn("ZNC WebAdmin private WireGuard", znc)
+        self.assertIn("Block public ZNC WebAdmin", znc)
+        self.assertIn("migrate_installed_znc_webadmin", setup)
         self.assertIn("/etc/caddy/tater-sites/znc-web.caddy", setup)
 
     def test_vps_setup_uses_focused_terminal_completion(self):
@@ -208,6 +215,9 @@ class WireGuardRuntimeTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("TATER TUNNEL // VPS SETUP CONSOLE", setup)
+        self.assertIn('apt-get install -y ca-certificates dialog git', setup)
+        self.assertIn("--item-help", setup)
+        self.assertIn("--programbox", setup)
         self.assertIn("ONE-TIME PAIRING CODE", setup)
         self.assertIn('show_pairing_completion "$domain" "$final_pairing_code"', setup)
         self.assertNotIn("VPS Agent service:", setup)
