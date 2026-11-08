@@ -63,6 +63,21 @@ Use the same command later and choose `Update Tater Tunnel`. For this
 WireGuard-only migration, the old tunnel identity is discarded and must be
 paired again.
 
+The first install ends on a focused screen containing only the VPS URL and
+one-time pairing code. Keep that screen private and enter both values in the
+Home Agent.
+
+Useful VPS details:
+
+- Public base ports: `80/tcp`, `443/tcp`, `51888/udp`, and the selected SSH port.
+- SFTPGo optionally adds public `2022/tcp`; its WebAdmin stays on
+  `127.0.0.1:8080`.
+- ZNC stays behind WireGuard at `10.88.0.1` on its selected listener port.
+- Service status: `sudo systemctl status tater-tunnel-vps`
+- Live logs: `sudo journalctl -u tater-tunnel-vps -f`
+- WireGuard peers: `sudo wg show tater0`
+- Security audit: rerun setup and choose `Run security audit`.
+
 Full instructions are in [VPS Install](docs/VPS_INSTALL.md).
 
 ## Home Agent

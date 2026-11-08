@@ -38,9 +38,9 @@ ssh-copy-id -i ~/.ssh/id_ed25519.pub tater@YOUR_VPS
 ssh tater@YOUR_VPS
 ```
 
-The installer prints these login-test commands again when setup finishes. Keep
-the original root session open until the new key login succeeds. There is no
-need to rerun the installer as the new user.
+Keep the original root session open until the new key login succeeds. There is
+no need to rerun the installer as the new user. These commands remain here so
+the install completion screen can stay focused on the URL and pairing code.
 
 After key login works, disable password and root SSH login:
 

@@ -24,6 +24,7 @@ if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
   RESET="$(printf '\033[0m')"
   BOLD="$(printf '\033[1m')"
   DIM="$(printf '\033[2m')"
+  REVERSE="$(printf '\033[7m')"
   ORANGE="$(printf '\033[38;5;208m')"
   GREEN="$(printf '\033[38;5;113m')"
   CYAN="$(printf '\033[38;5;45m')"
@@ -32,6 +33,7 @@ else
   RESET=""
   BOLD=""
   DIM=""
+  REVERSE=""
   ORANGE=""
   GREEN=""
   CYAN=""
@@ -118,10 +120,9 @@ clear_screen() {
 }
 
 print_logo() {
-  printf '%s+------------------------------------------------------------+%s\n' "$ORANGE$BOLD" "$RESET"
-  printf '%s|%s %-58s %s|%s\n' "$ORANGE$BOLD" "$RESET$BOLD" "Tater Tunnel VPS Setup" "$RESET$ORANGE$BOLD" "$RESET"
-  printf '%s|%s %-58s %s|%s\n' "$ORANGE$BOLD" "$RESET$DIM" "Private WireGuard path + device VPN" "$RESET$ORANGE$BOLD" "$RESET"
-  printf '%s+------------------------------------------------------------+%s\n' "$ORANGE$BOLD" "$RESET"
+  printf '%s+------------------------------------------------------------------------------+%s\n' "$ORANGE$BOLD" "$RESET"
+  printf '%s|%s %-76s %s|%s\n' "$ORANGE$BOLD" "$RESET$BOLD" "TATER TUNNEL // VPS SETUP CONSOLE" "$RESET$ORANGE$BOLD" "$RESET"
+  printf '%s+------------------------------------------------------------------------------+%s\n' "$ORANGE$BOLD" "$RESET"
 }
 
 recommended_menu_index() {
@@ -157,10 +158,7 @@ print_console_context() {
     install_state="not installed"
   fi
 
-  printf '\n%s  SYSTEM%s\n' "$CYAN$BOLD" "$RESET"
-  printf '  %-12s %s\n' "Host" "${host_name:0:42}"
-  printf '  %-12s %s\n' "Admin user" "${admin_user:0:42}"
-  printf '  %-12s %s\n' "Tater" "$install_state"
+  printf '| %-76.76s |\n' "HOST: ${host_name:0:20}  USER: ${admin_user:0:20}  STATUS: $install_state"
 }
 
 wizard_header() {
@@ -170,8 +168,8 @@ wizard_header() {
 
   clear_screen
   print_logo
-  printf '\n%s  STEP %s OF %s%s  %s%s%s\n' \
-    "$CYAN$BOLD" "$step_number" "$step_total" "$RESET" "$BOLD" "$title" "$RESET"
+  printf '| %-76.76s |\n' "STEP $step_number OF $step_total // ${title^^}"
+  printf '+------------------------------------------------------------------------------+\n'
 }
 
 pause() {
@@ -859,9 +857,9 @@ prompt_value() {
 
   while true; do
     if [ -n "$default_value" ]; then
-      printf '%s%s%s [%s]: ' "$BOLD" "$label" "$RESET" "$default_value" >&2
+      printf '\n%s%s%s [%s]\n> ' "$BOLD" "$label" "$RESET" "$default_value" >&2
     else
-      printf '%s%s%s: ' "$BOLD" "$label" "$RESET" >&2
+      printf '\n%s%s%s\n> ' "$BOLD" "$label" "$RESET" >&2
     fi
 
     read -r value
@@ -885,7 +883,7 @@ confirm() {
   fi
 
   while true; do
-    printf '%s%s%s %s: ' "$BOLD" "$label" "$RESET" "$hint" >&2
+    printf '\n%s%s%s %s\n> ' "$BOLD" "$label" "$RESET" "$hint" >&2
     read -r reply
     reply="${reply:-$default}"
     case "${reply,,}" in
@@ -910,23 +908,45 @@ show_progress_handoff() {
 
   clear_screen
   print_logo
-  printf '\n%s  INSTALL CONSOLE%s\n\n' "$CYAN$BOLD" "$RESET"
-  printf '  %s[ready]%s  Setup choices validated\n' "$GREEN" "$RESET"
-  printf '  %s[active]%s %s\n' "$ORANGE$BOLD" "$RESET" "$title"
-  printf '\n%s  Live output%s\n' "$DIM" "$RESET"
-  printf '%s--------------------------------------------------------------%s\n' "$DIM" "$RESET"
+  printf '| %-76s |\n' 'INSTALL LOG'
+  printf '+------------------------------------------------------------------------------+\n'
+  printf '| %-76.76s |\n' '[OK] SETUP CHOICES VALIDATED'
+  printf '| %-76.76s |\n' "[..] ${title^^}"
+  printf '+------------------------------------------------------------------------------+\n'
   if "$@"; then
     status="0"
   else
     status="$?"
   fi
-  printf '%s--------------------------------------------------------------%s\n' "$DIM" "$RESET"
+  printf '+------------------------------------------------------------------------------+\n'
   if [ "$status" = "0" ]; then
-    printf '\n  %s[done]%s   Action completed successfully\n' "$GREEN$BOLD" "$RESET"
+    printf '| %-76s |\n' '[OK] ACTION COMPLETED SUCCESSFULLY'
+    printf '+------------------------------------------------------------------------------+\n'
     return 0
   fi
   printf '\n  %s[failed]%s Action stopped with exit code %s\n' "$RED$BOLD" "$RESET" "$status" >&2
   return "$status"
+}
+
+show_pairing_completion() {
+  local domain="$1"
+  local pairing_code="$2"
+
+  clear_screen
+  print_logo
+  printf '| %-76s |\n' 'INSTALL COMPLETE'
+  printf '+------------------------------------------------------------------------------+\n'
+  printf '| %-76s |\n' ''
+  printf '| %-76s |\n' 'VPS URL'
+  printf '| %-76.76s |\n' "https://$domain"
+  printf '| %-76s |\n' ''
+  printf '| %-76s |\n' 'ONE-TIME PAIRING CODE'
+  printf '| %s%-76.76s%s |\n' "$GREEN$BOLD" "${pairing_code:-UNAVAILABLE}" "$RESET"
+  printf '| %-76s |\n' ''
+  printf '+------------------------------------------------------------------------------+\n'
+  printf '| %-76.76s |\n' 'Open Tater Tunnel on your computer and enter the URL and code above.'
+  printf '| %-76.76s |\n' 'Keep this screen private. The code closes after the first successful pairing.'
+  printf '+------------------------------------------------------------------------------+\n'
 }
 
 service_value() {
@@ -955,30 +975,32 @@ service_arg() {
 render_menu() {
   local selected="$1"
   local index
-  local number
   local recommended
-  local badge
+  local label
 
   clear_screen
   print_logo
   print_console_context
   recommended="$(recommended_menu_index)"
-  printf '\n%s  ACTIONS%s\n' "$CYAN$BOLD" "$RESET"
+  printf '+------------------------------------------------------------------------------+\n'
+  printf '| %-76s |\n' 'MAIN MENU'
+  printf '+------------------------------------------------------------------------------+\n'
 
   for index in "${!MENU_ITEMS[@]}"; do
-    number="$(printf '%02d' "$((index + 1))")"
-    badge=""
+    label="  $((index + 1)). ${MENU_ITEMS[$index]}"
     if [ "$index" -eq "$recommended" ]; then
-      badge="  ${GREEN}recommended${RESET}"
+      label="$label  [RECOMMENDED]"
     fi
     if [ "$index" -eq "$selected" ]; then
-      printf '  %s> [%s] %s%s%s\n' "$GREEN$BOLD" "$number" "${MENU_ITEMS[$index]}" "$RESET" "$badge"
-      printf '         %s%s%s\n' "$DIM" "${MENU_HELP[$index]}" "$RESET"
+      printf '|%s %-76.76s %s|\n' "$REVERSE$BOLD" "> $label" "$RESET"
     else
-      printf '    [%s] %s%s\n' "$number" "${MENU_ITEMS[$index]}" "$badge"
+      printf '| %-76.76s |\n' "  $label"
     fi
   done
-  printf '\n%s  Up/Down move  |  Enter select  |  1-9 quick select  |  q quit%s\n' "$DIM" "$RESET"
+  printf '+------------------------------------------------------------------------------+\n'
+  printf '| %-76.76s |\n' "${MENU_HELP[$selected]}"
+  printf '| %-76s |\n' 'UP/DOWN: MOVE   ENTER: SELECT   1-9: QUICK SELECT   Q: EXIT'
+  printf '+------------------------------------------------------------------------------+\n'
 }
 
 interactive_menu() {
@@ -993,7 +1015,7 @@ interactive_menu() {
     IFS= read -rsn1 key || exit 0
     if [ "$key" = $'\x1b' ]; then
       escape_sequence=""
-      IFS= read -rsn5 -t 0.15 escape_sequence || true
+      IFS= read -rsn2 -t 0.15 escape_sequence || true
       case "$escape_sequence" in
         "[A"*|"OA"*)
           selected=$(( (selected + ${#MENU_ITEMS[@]} - 1) % ${#MENU_ITEMS[@]} ))
@@ -1026,15 +1048,17 @@ numbered_menu() {
   print_logo
   print_console_context
   recommended="$(recommended_menu_index)"
-  printf '\n%s  ACTIONS%s\n\n' "$CYAN$BOLD" "$RESET"
+  printf '+------------------------------------------------------------------------------+\n'
+  printf '| %-76s |\n' 'MAIN MENU'
+  printf '+------------------------------------------------------------------------------+\n'
   for index in "${!MENU_ITEMS[@]}"; do
     badge=""
     if [ "$index" -eq "$recommended" ]; then
-      badge=" ${GREEN}(recommended)${RESET}"
+      badge=" [RECOMMENDED]"
     fi
-    printf '  %s. %s%s\n' "$((index + 1))" "${MENU_ITEMS[$index]}" "$badge"
-    printf '     %s%s%s\n' "$DIM" "${MENU_HELP[$index]}" "$RESET"
+    printf '| %-76.76s |\n' "$((index + 1)). ${MENU_ITEMS[$index]}$badge"
   done
+  printf '+------------------------------------------------------------------------------+\n'
 
   while true; do
     printf '\nSelect 1-%s: ' "${#MENU_ITEMS[@]}" >&2
@@ -1180,7 +1204,6 @@ run_full_install() {
   local cloudflare_ipv4=""
   local cloudflare_args
   local final_pairing_code
-  local tater_service_status
 
   handle_root_login_for_blank_vps
   require_root_for_install
@@ -1342,25 +1365,7 @@ EOF
   fi
 
   final_pairing_code="$(cat /var/lib/tater-tunnel/pairing-code 2>/dev/null || true)"
-  tater_service_status="$(systemctl is-active tater-tunnel-vps 2>/dev/null || true)"
-  cat <<EOF
-
-${GREEN}${BOLD}Tater Tunnel setup complete.${RESET}
-
-Pair the Home Agent with:
-  VPS URL:      https://$domain
-  Pairing code: ${final_pairing_code:-unavailable; run sudo cat /var/lib/tater-tunnel/pairing-code}
-
-VPS Agent service: ${tater_service_status:-unknown}
-WireGuard port:    51888/udp
-
-Keep this one-time pairing code private. After the Home Agent claims the VPS,
-public pairing closes and management continues inside the WireGuard tunnel.
-
-EOF
-  if [ "$CREATED_ADMIN_USER" = "1" ]; then
-    print_relogin_instructions "$ADMIN_USER"
-  fi
+  show_pairing_completion "$domain" "$final_pairing_code"
 }
 
 run_advanced_install() {

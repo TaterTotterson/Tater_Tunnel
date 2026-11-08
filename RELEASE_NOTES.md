@@ -1,4 +1,4 @@
-# Tater Tunnel v0.2.9
+# Tater Tunnel v0.2.10
 
 This update simplifies optional-service exposure while keeping each service's
 intended audience in mind.
@@ -19,3 +19,13 @@ intended audience in mind.
   optional-service firewall rules while preserving an existing public/private
   SFTPGo choice.
 - The VPS security audit now checks these optional-service boundaries.
+
+## Simpler VPS console
+
+- The setup launcher now uses a full-screen, old-school terminal menu with a
+  compact system line, highlighted selection, and contextual help footer.
+- Install progress uses the same fixed-width console styling.
+- A successful first install clears the log and shows only the VPS URL,
+  one-time pairing code, and the next pairing step.
+- Port references, service commands, SSH hardening, and troubleshooting remain
+  available in the GitHub README and VPS install guide.

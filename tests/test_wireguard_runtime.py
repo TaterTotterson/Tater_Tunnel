@@ -202,6 +202,17 @@ class WireGuardRuntimeTests(unittest.TestCase):
         self.assertIn("Block public SFTPGo", sftpgo)
         self.assertIn("/etc/caddy/tater-sites/znc-web.caddy", setup)
 
+    def test_vps_setup_uses_focused_terminal_completion(self):
+        setup = (
+            Path(__file__).parents[1] / "scripts" / "tater-vps-setup.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("TATER TUNNEL // VPS SETUP CONSOLE", setup)
+        self.assertIn("ONE-TIME PAIRING CODE", setup)
+        self.assertIn('show_pairing_completion "$domain" "$final_pairing_code"', setup)
+        self.assertNotIn("VPS Agent service:", setup)
+        self.assertNotIn("WireGuard port:", setup)
+
     def test_vps_service_allows_only_agent_tcp_and_wireguard_udp(self):
         installer = (
             Path(__file__).parents[1] / "scripts" / "install-vps-agent.sh"
