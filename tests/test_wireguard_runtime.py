@@ -214,10 +214,9 @@ class WireGuardRuntimeTests(unittest.TestCase):
             'show_progress_handoff "Cloudflare DNS progress will appear below."',
             setup,
         )
-        self.assertNotIn("--checklist", setup)
-        self.assertIn('confirm "Enable SFTP" no', setup)
-        self.assertIn('confirm "Enable FTP" no', setup)
-        self.assertIn('confirm "Enable WebDAV" no', setup)
+        self.assertIn("--checklist", setup)
+        self.assertIn('item="${item//\\\"/}"', setup)
+        self.assertIn('confirm "Enable SFTP on 2022/tcp" no', setup)
         self.assertIn('if [ "$sftpgo_sftp_access" != "disabled" ]', setup)
         self.assertIn('if [ "$sftpgo_webdav_access" != "disabled" ]', setup)
         self.assertIn("Allow SFTP from the public internet", setup)
@@ -278,7 +277,7 @@ class WireGuardRuntimeTests(unittest.TestCase):
         self.assertIn("screen_color = (WHITE,BLACK,OFF)", setup)
         self.assertIn("title_color = (YELLOW,BLACK,ON)", setup)
         self.assertNotIn("title_color = (RED,BLACK,ON)", setup)
-        self.assertIn("--yesno", setup)
+        self.assertIn("--checklist", setup)
         self.assertIn("ONE-TIME PAIRING CODE", setup)
         self.assertIn('show_pairing_completion "$domain" "$final_pairing_code"', setup)
         self.assertNotIn("VPS Agent service:", setup)
