@@ -49,15 +49,16 @@ curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/sc
   -o "$HOME/tater-vps-setup.sh" && sudo bash "$HOME/tater-vps-setup.sh"
 ```
 
-Choose `Blank VPS full install` on a fresh Debian or Ubuntu VPS. The guided
+Choose `Install on a blank VPS` on a fresh Debian or Ubuntu VPS. The guided
 installer configures WireGuard, Caddy, UFW, automatic HTTPS, and the systemd
 service. It can also install ZNC and SFTPGo.
 
 If logged in directly as root, run the command without `sudo` first. The menu
-can create a normal sudo user and show the SSH key setup commands. Reconnect as
-that user before continuing the full install.
+creates a normal sudo user and continues the full install in the same session.
+After setup, test the new account from a second terminal before disabling root
+or password SSH access.
 
-Use the same command later and choose `Update existing install`. For this
+Use the same command later and choose `Update Tater Tunnel`. For this
 WireGuard-only migration, the old tunnel identity is discarded and must be
 paired again.
 

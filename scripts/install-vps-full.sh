@@ -98,11 +98,8 @@ Use the guided setup first:
   curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \
     -o "$HOME/tater-vps-setup.sh" && bash "$HOME/tater-vps-setup.sh"
 
-It can create the sudo user, show SSH key setup commands, and stop. Then log in
-as the new user and rerun setup with sudo:
-
-  curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \
-    -o "$HOME/tater-vps-setup.sh" && sudo bash "$HOME/tater-vps-setup.sh"
+It can create the sudo user, continue the full installation in the same
+session, and show the SSH login test and hardening commands when setup is done.
 
 Advanced override:
   ./scripts/install-vps-full.sh --allow-root-login --domain tunnel.example.com

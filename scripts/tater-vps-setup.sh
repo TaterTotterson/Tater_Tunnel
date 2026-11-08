@@ -13,6 +13,8 @@ NO_RUN="0"
 IN_REPO_SOURCE="0"
 SERVICE_NAME="tater-tunnel-vps"
 SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME.service"
+ADMIN_USER="${TATER_TUNNEL_ADMIN_USER:-}"
+CREATED_ADMIN_USER="0"
 
 if [ -f "$SCRIPT_DIR/install-vps-full.sh" ] && [ -f "$SCRIPT_DIR/install-vps-agent.sh" ] && [ -f "$SCRIPT_DIR/uninstall-vps.sh" ] && [ -f "$SCRIPT_DIR/install-znc.sh" ] && [ -f "$SCRIPT_DIR/install-sftpgo.sh" ] && [ -f "$SCRIPT_DIR/configure-cloudflare-dns.sh" ]; then
   IN_REPO_SOURCE="1"
@@ -37,25 +39,25 @@ else
 fi
 
 MENU_ITEMS=(
-  "Update existing install"
-  "Blank VPS full install"
-  "Advanced existing VPS install"
-  "Optional ZNC install"
-  "Optional SFTPGo install/update"
-  "Audit VPS security"
-  "Uninstall VPS install"
+  "Update Tater Tunnel"
+  "Install on a blank VPS"
+  "Install agent only (advanced)"
+  "Install ZNC (optional)"
+  "Install SFTPGo (optional)"
+  "Run security audit"
+  "Uninstall Tater Tunnel"
   "View setup notes"
   "Exit"
 )
 
 MENU_HELP=(
-  "Updates code and settings, resets retired relay state, and restarts the VPS Agent."
-  "Installs the full stack, with optional Cloudflare DNS, ZNC, and SFTPGo setup."
-  "Installs only the Tater VPS Agent. You manage HTTPS, firewall, and proxy."
-  "Installs ZNC for the sudo user with config stored in that user's home."
-  "Installs or updates SFTPGo, enables it at boot, and optionally opens its ports."
-  "Checks private tunnel isolation, Caddy, UFW, peer scope, permissions, and service hardening."
-  "Removes the VPS Agent and app files, with optional state/config purge."
+  "Keep settings and pairing, install the newest code, then restart the service."
+  "Guided setup for WireGuard, HTTPS, firewall, and optional services."
+  "Install only the VPS Agent; you manage HTTPS, firewall, and proxy settings."
+  "Run the IRC bouncer under a normal user with its config in that user's home."
+  "Install or update the file server and configure its storage limit."
+  "Check tunnel isolation, firewall rules, permissions, and service hardening."
+  "Remove the VPS Agent, with clear choices for retaining or deleting its data."
   "Shows the install notes and port checklist."
   "Leaves setup without changing anything."
 )
@@ -75,19 +77,19 @@ Fresh VPS root login:
   curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \
     -o "$HOME/tater-vps-setup.sh" && bash "$HOME/tater-vps-setup.sh"
 
-The root-login flow creates a sudo user first, prints SSH key hardening steps,
-and asks you to reconnect as that user before installing Tater Tunnel.
+The root-login flow creates a sudo user and then continues the same guided
+install. System work stays privileged while user-owned services run under the
+new account. Test the new SSH login after setup before disabling root access.
 
 This interactive launcher provides:
   - Source download/update when launched standalone
-  - First-run sudo user creation when launched from a root login
+  - First-run sudo user creation without interrupting the install
   - Safe update path for existing installs
   - Arrow-key setup menu
-  - Blank VPS full install path
+  - Guided blank VPS install path
   - Optional Cloudflare DNS-only record setup
-  - Advanced existing VPS install path
-  - Optional ZNC install path
-  - Optional SFTPGo install/update path
+  - Advanced agent-only install path
+  - Optional ZNC and SFTPGo install paths
   - Read-only VPS security audit
   - Uninstall path with optional data purge
   - Setup summary and progress handoff
@@ -120,6 +122,56 @@ print_logo() {
   printf '%s|%s %-58s %s|%s\n' "$ORANGE$BOLD" "$RESET$BOLD" "Tater Tunnel VPS Setup" "$RESET$ORANGE$BOLD" "$RESET"
   printf '%s|%s %-58s %s|%s\n' "$ORANGE$BOLD" "$RESET$DIM" "Private WireGuard path + device VPN" "$RESET$ORANGE$BOLD" "$RESET"
   printf '%s+------------------------------------------------------------+%s\n' "$ORANGE$BOLD" "$RESET"
+}
+
+recommended_menu_index() {
+  if [ -f "$SERVICE_FILE" ]; then
+    printf '0'
+  else
+    printf '1'
+  fi
+}
+
+console_admin_user() {
+  if [ -n "$ADMIN_USER" ]; then
+    printf '%s' "$ADMIN_USER"
+  elif [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+    printf '%s' "$SUDO_USER"
+  elif is_root_login; then
+    printf 'create during setup'
+  else
+    id -un
+  fi
+}
+
+print_console_context() {
+  local host_name
+  local install_state
+  local admin_user
+
+  host_name="$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf 'VPS')"
+  admin_user="$(console_admin_user)"
+  if [ -f "$SERVICE_FILE" ]; then
+    install_state="installed"
+  else
+    install_state="not installed"
+  fi
+
+  printf '\n%s  SYSTEM%s\n' "$CYAN$BOLD" "$RESET"
+  printf '  %-12s %s\n' "Host" "${host_name:0:42}"
+  printf '  %-12s %s\n' "Admin user" "${admin_user:0:42}"
+  printf '  %-12s %s\n' "Tater" "$install_state"
+}
+
+wizard_header() {
+  local step_number="$1"
+  local step_total="$2"
+  local title="$3"
+
+  clear_screen
+  print_logo
+  printf '\n%s  STEP %s OF %s%s  %s%s%s\n' \
+    "$CYAN$BOLD" "$step_number" "$step_total" "$RESET" "$BOLD" "$title" "$RESET"
 }
 
 pause() {
@@ -225,6 +277,10 @@ prompt_sudo_username() {
 }
 
 default_sudo_user() {
+  if [ -n "$ADMIN_USER" ]; then
+    printf '%s' "$ADMIN_USER"
+    return
+  fi
   if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
     printf '%s' "$SUDO_USER"
     return
@@ -540,8 +596,11 @@ print_relogin_instructions() {
 
 ${GREEN}${BOLD}Sudo user is ready.${RESET}
 
-Stop here, open a terminal on your PC, and log back in as the new user before
-installing Tater Tunnel:
+The guided install continued in the original session. You do not need to run
+the installer again.
+
+Keep this root session open and test the new account from a second terminal on
+your PC:
 
   VPS_HOST=$host_hint
   ssh $username@\$VPS_HOST
@@ -551,11 +610,6 @@ If you do not already use an SSH key for this VPS, run these from your PC:
   ssh-keygen -t ed25519 -C "tater-tunnel-vps"
   ssh-copy-id -i ~/.ssh/id_ed25519.pub $username@\$VPS_HOST
   ssh $username@\$VPS_HOST
-
-Then rerun the Tater Tunnel setup as the sudo user:
-
-  curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \\
-    -o "\$HOME/tater-vps-setup.sh" && sudo bash "\$HOME/tater-vps-setup.sh"
 
 After you confirm key-based login works, you can harden SSH with:
 
@@ -585,26 +639,22 @@ ${ORANGE}${BOLD}Root login detected.${RESET}
 For a blank VPS, create a normal sudo user first. That keeps the Tater install
 and future SSH access safer than doing day-to-day work as root.
 
-This setup can create the user, add it to the sudo group, optionally copy your
-root SSH keys, and then stop so you can reconnect as the new user.
+This setup will create the user, add it to the sudo group, optionally copy your
+root SSH keys, and continue in this session. System changes still run as root;
+user-owned services run as the new account.
 
 EOF
 
   if ! confirm "Create a sudo user before installing Tater Tunnel" yes; then
-    cat <<EOF
-
-No install was started. Reconnect as a non-root sudo user, then rerun setup:
-
-  curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \\
-    -o "\$HOME/tater-vps-setup.sh" && sudo bash "\$HOME/tater-vps-setup.sh"
-EOF
+    printf '\n%sA normal admin account is required for the guided blank-VPS install.%s\n' "$RED" "$RESET"
     exit 1
   fi
 
   username="$(prompt_sudo_username)"
   create_sudo_user "$username"
-  print_relogin_instructions "$username"
-  exit 0
+  ADMIN_USER="$username"
+  CREATED_ADMIN_USER="1"
+  printf '\n%sAdmin user %s is ready. Continuing setup now.%s\n' "$GREEN$BOLD" "$username" "$RESET"
 }
 
 handle_root_login_for_user_addon() {
@@ -624,25 +674,20 @@ Optional user services like ZNC should run as a normal sudo user, with config
 stored in that user's home folder.
 
 This setup can create the sudo user, optionally copy root SSH keys, and then
-stop so you can reconnect as that user before installing ZNC.
+continue while running ZNC itself under that account.
 
 EOF
 
   if ! confirm "Create a sudo user before installing ZNC" yes; then
-    cat <<EOF
-
-No ZNC install was started. Reconnect as a non-root sudo user, then rerun setup:
-
-  curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/scripts/tater-vps-setup.sh \\
-    -o "\$HOME/tater-vps-setup.sh" && sudo bash "\$HOME/tater-vps-setup.sh"
-EOF
+    printf '\n%sZNC needs a normal user account and will not run as root.%s\n' "$RED" "$RESET"
     exit 1
   fi
 
   username="$(prompt_sudo_username)"
   create_sudo_user "$username"
-  print_relogin_instructions "$username"
-  exit 0
+  ADMIN_USER="$username"
+  CREATED_ADMIN_USER="1"
+  printf '\n%sAdmin user %s is ready. Continuing with ZNC setup.%s\n' "$GREEN$BOLD" "$username" "$RESET"
 }
 
 require_bootstrap_packages() {
@@ -817,15 +862,28 @@ print_stage() {
 
 show_progress_handoff() {
   local title="$1"
+  local status
   shift
 
   clear_screen
   print_logo
-  print_stage "1" "3" "Validated setup choices"
-  print_stage "2" "3" "Running selected action"
-  printf '%s%s%s\n' "$DIM" "$title" "$RESET"
-  print_stage "3" "3" "Installer output"
-  "$@"
+  printf '\n%s  INSTALL CONSOLE%s\n\n' "$CYAN$BOLD" "$RESET"
+  printf '  %s[ready]%s  Setup choices validated\n' "$GREEN" "$RESET"
+  printf '  %s[active]%s %s\n' "$ORANGE$BOLD" "$RESET" "$title"
+  printf '\n%s  Live output%s\n' "$DIM" "$RESET"
+  printf '%s--------------------------------------------------------------%s\n' "$DIM" "$RESET"
+  if "$@"; then
+    status="0"
+  else
+    status="$?"
+  fi
+  printf '%s--------------------------------------------------------------%s\n' "$DIM" "$RESET"
+  if [ "$status" = "0" ]; then
+    printf '\n  %s[done]%s   Action completed successfully\n' "$GREEN$BOLD" "$RESET"
+    return 0
+  fi
+  printf '\n  %s[failed]%s Action stopped with exit code %s\n' "$RED$BOLD" "$RESET" "$status" >&2
+  return "$status"
 }
 
 service_value() {
@@ -855,27 +913,37 @@ render_menu() {
   local selected="$1"
   local index
   local number
+  local recommended
+  local badge
 
   clear_screen
   print_logo
-  printf '\n%sUse Up/Down arrows, j/k, w/s, number keys, Enter to select, q to quit.%s\n' "$DIM" "$RESET"
-  printf '%sCurrent source:%s %s\n\n' "$DIM" "$RESET" "$SCRIPT_DIR"
+  print_console_context
+  recommended="$(recommended_menu_index)"
+  printf '\n%s  ACTIONS%s\n' "$CYAN$BOLD" "$RESET"
 
   for index in "${!MENU_ITEMS[@]}"; do
     number="$(printf '%02d' "$((index + 1))")"
+    badge=""
+    if [ "$index" -eq "$recommended" ]; then
+      badge="  ${GREEN}recommended${RESET}"
+    fi
     if [ "$index" -eq "$selected" ]; then
-      printf '  %s> [%s] %-31s%s\n' "$GREEN$BOLD" "$number" "${MENU_ITEMS[$index]}" "$RESET"
-      printf '       %s%s%s\n' "$DIM" "${MENU_HELP[$index]}" "$RESET"
+      printf '  %s> [%s] %s%s%s\n' "$GREEN$BOLD" "$number" "${MENU_ITEMS[$index]}" "$RESET" "$badge"
+      printf '         %s%s%s\n' "$DIM" "${MENU_HELP[$index]}" "$RESET"
     else
-      printf '    [%s] %s\n' "$number" "${MENU_ITEMS[$index]}"
+      printf '    [%s] %s%s\n' "$number" "${MENU_ITEMS[$index]}" "$badge"
     fi
   done
+  printf '\n%s  Up/Down move  |  Enter select  |  1-9 quick select  |  q quit%s\n' "$DIM" "$RESET"
 }
 
 interactive_menu() {
-  local selected=0
+  local selected
   local key
   local escape_sequence
+
+  selected="$(recommended_menu_index)"
 
   while true; do
     render_menu "$selected"
@@ -908,12 +976,20 @@ interactive_menu() {
 numbered_menu() {
   local choice
   local index
+  local recommended
+  local badge
 
   clear_screen
   print_logo
-  printf '\n'
+  print_console_context
+  recommended="$(recommended_menu_index)"
+  printf '\n%s  ACTIONS%s\n\n' "$CYAN$BOLD" "$RESET"
   for index in "${!MENU_ITEMS[@]}"; do
-    printf '  %s. %s\n' "$((index + 1))" "${MENU_ITEMS[$index]}"
+    badge=""
+    if [ "$index" -eq "$recommended" ]; then
+      badge=" ${GREEN}(recommended)${RESET}"
+    fi
+    printf '  %s. %s%s\n' "$((index + 1))" "${MENU_ITEMS[$index]}" "$badge"
     printf '     %s%s%s\n' "$DIM" "${MENU_HELP[$index]}" "$RESET"
   done
 
@@ -988,7 +1064,7 @@ EOF
 
   cat <<EOF
 
-${BOLD}Update existing install${RESET}
+${BOLD}Update Tater Tunnel${RESET}
 This updates the app files and systemd unit while preserving:
   - Current WireGuard-only pairing state in $state_dir
   - WireGuard config in $config_dir
@@ -1069,11 +1145,10 @@ run_full_install() {
 
   handle_root_login_for_blank_vps
   require_root_for_install
-  clear_screen
-  print_logo
+  wizard_header "1" "4" "Core VPS settings"
   cat <<EOF
 
-${BOLD}Blank VPS full install${RESET}
+${BOLD}Install on a blank VPS${RESET}
 This path installs Tater Tunnel, Caddy automatic HTTPS, WireGuard, and UFW.
 Caddy will route HTTPS traffic to the local Tater service on 127.0.0.1.
 Optional ZNC and SFTPGo services can be included in the same setup.
@@ -1091,6 +1166,9 @@ EOF
   pairing_code="$(prompt_value "Pairing code (blank to generate)" "" no)"
 
   args=("$SCRIPT_DIR/install-vps-full.sh" --domain "$domain" --ssh-port "$ssh_port" --listen-port "$listen_port")
+  if is_root_login; then
+    args+=(--allow-root-login)
+  fi
   if [ -n "$email" ]; then
     args+=(--email "$email")
   fi
@@ -1101,6 +1179,8 @@ EOF
     args+=(--no-firewall)
     configure_firewall="0"
   fi
+
+  printf '\n%s  STEP 2 OF 4%s  %sOptional services%s\n\n' "$CYAN$BOLD" "$RESET" "$BOLD" "$RESET"
 
   if confirm "Install optional ZNC IRC bouncer" no; then
     install_znc="1"
@@ -1184,12 +1264,11 @@ EOF
     cloudflare_ipv4="$(prompt_value "VPS public IPv4 (blank to auto-detect)" "" no)"
   fi
 
-  clear_screen
-  print_logo
+  wizard_header "3" "4" "Review installation"
   cat <<EOF
 
 ${BOLD}Ready to install:${RESET}
-  Path:        Blank VPS full install
+  Path:        Guided blank VPS install
   Domain:      $domain
   HTTPS:       Caddy automatic certificates on 443/tcp
   Agent:       http://127.0.0.1:$listen_port
@@ -1205,6 +1284,9 @@ $([ -n "$sftpgo_storage_cap_gb" ] && printf '  SFTP storage: %s GiB total cap\n'
 
 EOF
   if ! confirm "Start install now" yes; then
+    if [ "$CREATED_ADMIN_USER" = "1" ]; then
+      print_relogin_instructions "$ADMIN_USER"
+    fi
     return 0
   fi
 
@@ -1320,6 +1402,9 @@ Keep this one-time pairing code private. After the Home Agent claims the VPS,
 public pairing closes and management continues inside the WireGuard tunnel.
 
 EOF
+  if [ "$CREATED_ADMIN_USER" = "1" ]; then
+    print_relogin_instructions "$ADMIN_USER"
+  fi
 }
 
 run_advanced_install() {
@@ -1334,7 +1419,7 @@ run_advanced_install() {
   print_logo
   cat <<EOF
 
-${BOLD}Advanced existing VPS install${RESET}
+${BOLD}Install agent only (advanced)${RESET}
 This path installs only the Tater VPS Agent service.
 It will not install Caddy and will not change firewall rules.
 
@@ -1364,7 +1449,7 @@ EOF
   cat <<EOF
 
 ${BOLD}Ready to install:${RESET}
-  Path:        Advanced existing VPS install
+  Path:        Agent-only advanced install
   Agent:       http://$listen_host:$listen_port
   Caddy/HTTPS: unchanged
   Firewall:    unchanged
@@ -1394,7 +1479,7 @@ run_znc_install() {
   print_logo
   cat <<EOF
 
-${BOLD}Optional ZNC install${RESET}
+${BOLD}Install ZNC${RESET}
 This installs ZNC as a user-owned IRC bouncer. The config/data directory stays
 in the user's home folder, for example /home/tater/.znc.
 
@@ -1450,10 +1535,16 @@ ${BOLD}Ready to install ZNC:${RESET}
 EOF
 
   if ! confirm "Install ZNC now" yes; then
+    if [ "$CREATED_ADMIN_USER" = "1" ]; then
+      print_relogin_instructions "$ADMIN_USER"
+    fi
     return 0
   fi
 
   show_progress_handoff "ZNC install progress will appear below." "${args[@]}"
+  if [ "$CREATED_ADMIN_USER" = "1" ]; then
+    print_relogin_instructions "$ADMIN_USER"
+  fi
 }
 
 run_sftpgo_install() {
@@ -1466,7 +1557,7 @@ run_sftpgo_install() {
   print_logo
   cat <<EOF
 
-${BOLD}Optional SFTPGo install/update${RESET}
+${BOLD}Install or update SFTPGo${RESET}
 This installs the current open-source SFTPGo release and enables its systemd
 service at boot. Running it again updates SFTPGo while preserving its existing
 configuration, users, and files.
@@ -1527,7 +1618,7 @@ run_uninstall() {
   print_logo
   cat <<EOF
 
-${BOLD}Uninstall VPS install${RESET}
+${BOLD}Uninstall Tater Tunnel${RESET}
 This removes the Tater Tunnel VPS Agent service and installed app files.
 It keeps pairing/device state and WireGuard config unless you choose to purge.
 

@@ -11,13 +11,13 @@ curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/sc
 
 Use the arrow keys to choose:
 
-- `Update existing install`
-- `Blank VPS full install`
-- `Advanced existing VPS install`
-- `Optional ZNC install`
-- `Optional SFTPGo install/update`
-- `Audit VPS security`
-- `Uninstall VPS install`
+- `Update Tater Tunnel`
+- `Install on a blank VPS`
+- `Install agent only (advanced)`
+- `Install ZNC (optional)`
+- `Install SFTPGo (optional)`
+- `Run security audit`
+- `Uninstall Tater Tunnel`
 - `View setup notes`
 
 The downloaded file form is preferred for the interactive menu. If the repo is
@@ -26,8 +26,9 @@ already on the VPS, run `sudo ./scripts/tater-vps-setup.sh`.
 ## First Login As Root
 
 On a new VPS where the only account is root, run the setup command without
-`sudo`. The blank install path offers to create a normal sudo user, copy any
-existing authorized keys, and print PC-side SSH key commands.
+`sudo`. The blank install path creates a normal sudo user, can copy existing
+authorized keys, and then continues the full setup in the same session. System
+changes remain privileged while user-owned services run under the new account.
 
 For example:
 
@@ -37,8 +38,9 @@ ssh-copy-id -i ~/.ssh/id_ed25519.pub tater@YOUR_VPS
 ssh tater@YOUR_VPS
 ```
 
-Keep the original root session open until the new key login succeeds. Then
-reconnect as the sudo user and rerun the guided setup with `sudo`.
+The installer prints these login-test commands again when setup finishes. Keep
+the original root session open until the new key login succeeds. There is no
+need to rerun the installer as the new user.
 
 After key login works, disable password and root SSH login:
 
@@ -132,7 +134,7 @@ old schema, then replaces their contents with fresh schema-v2 state.
 
 After updating:
 
-1. Choose `Update existing install` and reopen pairing.
+1. Choose `Update Tater Tunnel` and reopen pairing.
 2. Restart or update the Home Agent.
 3. Pair again with the newly shown code.
 4. Re-enroll remote devices.
@@ -142,7 +144,7 @@ There is no HTTPS relay fallback.
 
 ## Updating
 
-Run the same one-command setup and choose `Update existing install`. It updates
+Run the same one-command setup and choose `Update Tater Tunnel`. It updates
 the installed source, preserves current schema-v2 state, rewrites Caddy to the
 bootstrap-only policy, repairs UFW rules, and restarts the service. Choose to
 reopen pairing only when connecting a fresh Home Agent.
@@ -261,7 +263,7 @@ sudo -u tater-tunnel python3 -B -m tater_tunnel.vps_agent \
 
 ## Uninstall
 
-Choose `Uninstall VPS install` in the guided menu or run:
+Choose `Uninstall Tater Tunnel` in the guided menu or run:
 
 ```bash
 sudo ./scripts/uninstall-vps.sh
