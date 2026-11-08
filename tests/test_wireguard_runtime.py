@@ -266,6 +266,10 @@ class WireGuardRuntimeTests(unittest.TestCase):
         self.assertIn('tail --pid="$command_pid"', setup)
         self.assertIn('wait "$command_pid"', setup)
         self.assertNotIn('"$@" 2>&1 | dialog --clear', setup)
+        self.assertIn("show_interactive_handoff", setup)
+        self.assertIn('"$@" </dev/tty >/dev/tty 2>&1', setup)
+        self.assertIn('run_znc_installer "$znc_makeconf"', setup)
+        self.assertIn('run_znc_installer "$run_makeconf"', setup)
         self.assertIn("run_menu_action run_sftpgo_install", setup)
         self.assertIn("run_menu_action run_full_install", setup)
         self.assertIn(

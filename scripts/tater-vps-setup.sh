@@ -1485,6 +1485,46 @@ $failure_details"
   return "$status"
 }
 
+show_interactive_handoff() {
+  local title="$1"
+  local status
+  shift
+
+  if [ "$DIALOG_ENABLED" != "1" ]; then
+    show_progress_handoff "$title" "$@"
+    return
+  fi
+
+  clear_screen
+  print_logo
+  printf '| %-76s |\n' 'INTERACTIVE SETUP'
+  printf '+------------------------------------------------------------------------------+\n'
+  printf '\n%s%s%s\n\n' "$BOLD" "$title" "$RESET"
+  printf 'Complete the questions below. The setup console will return when finished.\n\n'
+
+  set +e
+  "$@" </dev/tty >/dev/tty 2>&1
+  status="$?"
+  set -e
+  if [ "$status" != "0" ]; then
+    dialog_message "Action failed" "The interactive action stopped with exit code $status."
+    return "$status"
+  fi
+
+  dialog_message "Interactive setup complete" "$title finished successfully."
+}
+
+run_znc_installer() {
+  local makeconf="$1"
+  shift
+
+  if [ "$makeconf" = "1" ]; then
+    show_interactive_handoff "ZNC configuration wizard" "$@"
+  else
+    show_progress_handoff "ZNC install progress will appear below." "$@"
+  fi
+}
+
 show_cloudflare_progress() (
   local title="$1"
   local token="$2"
@@ -1998,7 +2038,7 @@ The token is used once and is not saved." yes)"
     if [ "$znc_makeconf" = "1" ]; then
       znc_args+=(--makeconf)
     fi
-    show_progress_handoff "ZNC install progress will appear below." "${znc_args[@]}"
+    run_znc_installer "$znc_makeconf" "${znc_args[@]}"
     cat <<EOF
 
 ZNC connection:
@@ -2181,7 +2221,7 @@ Public access: blocked"; then
     return 0
   fi
 
-  show_progress_handoff "ZNC install progress will appear below." "${args[@]}"
+  run_znc_installer "$run_makeconf" "${args[@]}"
   remove_legacy_znc_web_proxy
   if [ "$CREATED_ADMIN_USER" = "1" ]; then
     print_relogin_instructions "$ADMIN_USER"
