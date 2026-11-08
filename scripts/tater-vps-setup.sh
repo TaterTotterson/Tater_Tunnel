@@ -462,6 +462,7 @@ suggest_sftpgo_storage_gb() {
 
 select_sftpgo_protocols() {
   local selected=""
+  local item
 
   while true; do
     sftpgo_sftp_access="disabled"
@@ -469,42 +470,25 @@ select_sftpgo_protocols() {
     sftpgo_webdav_access="disabled"
     if [ "$DIALOG_ENABLED" = "1" ]; then
       set_dialog_dimensions
-      if ! selected="$(dialog --stdout --clear \
+      if ! selected="$(dialog --stdout --clear --separate-output \
         --backtitle "Tater Tunnel // VPS Setup Console" \
         --title "$CURRENT_DIALOG_TITLE" \
-        --menu "Choose the exact protocol combination to run.\n\nUse the arrow keys and press Enter. Setup applies this choice to SFTPGo automatically." \
-        "$DIALOG_HEIGHT" "$DIALOG_WIDTH" 10 \
-        1 "SFTP only (recommended for secure file transfer)" \
-        2 "WebDAV only (Finder and WebDAV clients)" \
-        3 "SFTP + WebDAV" \
-        4 "FTP only (legacy clients)" \
-        5 "SFTP + FTP" \
-        6 "FTP + WebDAV" \
-        7 "SFTP + FTP + WebDAV")"; then
+        --checklist "Select every file protocol to configure. Setup will apply these choices to SFTPGo automatically.\n\nUse Space to toggle an item, then press Enter." \
+        "$DIALOG_HEIGHT" "$DIALOG_WIDTH" 8 \
+        SFTP "Encrypted file transfer over SSH" off \
+        FTP "Legacy FTP with passive-mode support" off \
+        WebDAV "Finder and WebDAV-compatible file access" off)"; then
         return 130
       fi
-      case "$selected" in
-        1) sftpgo_sftp_access="private" ;;
-        2) sftpgo_webdav_access="private" ;;
-        3)
-          sftpgo_sftp_access="private"
-          sftpgo_webdav_access="private"
-          ;;
-        4) sftpgo_ftp_access="private" ;;
-        5)
-          sftpgo_sftp_access="private"
-          sftpgo_ftp_access="private"
-          ;;
-        6)
-          sftpgo_ftp_access="private"
-          sftpgo_webdav_access="private"
-          ;;
-        7)
-          sftpgo_sftp_access="private"
-          sftpgo_ftp_access="private"
-          sftpgo_webdav_access="private"
-          ;;
-      esac
+      while IFS= read -r item; do
+        item="${item//\"/}"
+        item="${item//[[:space:]]/}"
+        case "$item" in
+          SFTP) sftpgo_sftp_access="private" ;;
+          FTP) sftpgo_ftp_access="private" ;;
+          WebDAV) sftpgo_webdav_access="private" ;;
+        esac
+      done <<< "$selected"
     else
       confirm "Enable SFTP on 2022/tcp" no && sftpgo_sftp_access="private"
       confirm "Enable FTP on 2121/tcp with passive ports 50000-50100" no && sftpgo_ftp_access="private"
@@ -516,7 +500,11 @@ select_sftpgo_protocols() {
       || [ "$sftpgo_webdav_access" != "disabled" ]; then
       return 0
     fi
-    printf '%sEnable at least one file protocol.%s\n' "$RED" "$RESET" >&2
+    if [ "$DIALOG_ENABLED" = "1" ]; then
+      dialog_message "Choose a protocol" "Enable at least one SFTPGo file protocol."
+    else
+      printf '%sEnable at least one file protocol.%s\n' "$RED" "$RESET" >&2
+    fi
   done
 }
 
