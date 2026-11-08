@@ -215,7 +215,8 @@ class WireGuardRuntimeTests(unittest.TestCase):
             setup,
         )
         self.assertIn("--checklist", setup)
-        self.assertIn('item="${item//\\\"/}"', setup)
+        self.assertIn('selected="${selected//\\\"/}"', setup)
+        self.assertIn('selected="${selected//$\'\\n\'/ }"', setup)
         self.assertIn('confirm "Enable SFTP on 2022/tcp" no', setup)
         self.assertIn('if [ "$sftpgo_sftp_access" != "disabled" ]', setup)
         self.assertIn('if [ "$sftpgo_webdav_access" != "disabled" ]', setup)
@@ -232,6 +233,10 @@ class WireGuardRuntimeTests(unittest.TestCase):
         self.assertIn("wait_for_tcp_listener", sftpgo)
         self.assertIn("verify_webdav_https", sftpgo)
         self.assertIn('"https://$WEBDAV_DOMAIN/"', sftpgo)
+        self.assertIn("verify_sftpgo_selection_applied", setup)
+        self.assertIn("managed_sftpgo_webdav_domain", setup)
+        self.assertIn('read -r -a selected_items <<< "$selected"', setup)
+        self.assertIn('dialog_message "SFTPGo ready"', setup)
         self.assertIn("sftpgo-webdav.caddy", setup + sftpgo)
         self.assertIn("reverse_proxy 127.0.0.1:$WEBDAV_PORT", sftpgo)
         self.assertIn("header_up Host {host}", sftpgo)
@@ -293,6 +298,68 @@ class WireGuardRuntimeTests(unittest.TestCase):
         self.assertIn("KbdInteractiveAuthentication no", readme)
         self.assertIn("PermitRootLogin no", readme)
 
+    def test_sftpgo_menu_passes_selected_webdav_mode_to_installer(self):
+        setup = Path(__file__).parents[1] / "scripts" / "tater-vps-setup.sh"
+
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Path(directory) / "args.txt"
+            harness = f'''
+set -Eeuo pipefail
+source "{setup}"
+DIALOG_ENABLED=0
+CAPTURE="{capture}"
+require_root_for_install() {{ :; }}
+clear_screen() {{ :; }}
+print_logo() {{ :; }}
+select_sftpgo_protocols() {{
+  sftpgo_sftp_access="private"
+  sftpgo_ftp_access="disabled"
+  sftpgo_webdav_access="private"
+}}
+installed_tater_domain() {{ printf '%s' 'tunnel.example.com'; }}
+choose_sftpgo_access() {{
+  sftpgo_webdav_access="https"
+  sftpgo_webdav_domain="files.example.com"
+  sftpgo_insecure_public="0"
+}}
+confirm() {{
+  case "$1" in
+    "Install or update SFTPGo now") return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+show_progress_handoff() {{
+  shift
+  printf '%s\n' "$@" > "$CAPTURE"
+}}
+verify_sftpgo_selection_applied() {{
+  printf 'verified:%s:%s:%s:%s\n' "$1" "$2" "$3" "$4" >> "$CAPTURE"
+}}
+run_sftpgo_install >/dev/null
+'''
+            completed = subprocess.run(
+                ["bash", "-c", harness],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(
+                capture.read_text(encoding="utf-8").splitlines(),
+                [
+                    str(setup.parent / "install-sftpgo.sh"),
+                    "--sftp-access",
+                    "private",
+                    "--ftp-access",
+                    "disabled",
+                    "--webdav-access",
+                    "https",
+                    "--webdav-domain",
+                    "files.example.com",
+                    "verified:private:disabled:https:files.example.com",
+                ],
+            )
     def test_vps_service_allows_only_agent_tcp_and_wireguard_udp(self):
         installer = (
             Path(__file__).parents[1] / "scripts" / "install-vps-agent.sh"

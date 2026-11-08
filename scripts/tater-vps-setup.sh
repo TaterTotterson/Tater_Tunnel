@@ -463,6 +463,7 @@ suggest_sftpgo_storage_gb() {
 select_sftpgo_protocols() {
   local selected=""
   local item
+  local -a selected_items=()
 
   while true; do
     sftpgo_sftp_access="disabled"
@@ -480,15 +481,16 @@ select_sftpgo_protocols() {
         WebDAV "Finder and WebDAV-compatible file access" off)"; then
         return 130
       fi
-      while IFS= read -r item; do
-        item="${item//\"/}"
-        item="${item//[[:space:]]/}"
+      selected="${selected//\"/}"
+      selected="${selected//$'\n'/ }"
+      read -r -a selected_items <<< "$selected"
+      for item in "${selected_items[@]}"; do
         case "$item" in
           SFTP) sftpgo_sftp_access="private" ;;
           FTP) sftpgo_ftp_access="private" ;;
           WebDAV) sftpgo_webdav_access="private" ;;
         esac
-      done <<< "$selected"
+      done
     else
       confirm "Enable SFTP on 2022/tcp" no && sftpgo_sftp_access="private"
       confirm "Enable FTP on 2121/tcp with passive ports 50000-50100" no && sftpgo_ftp_access="private"
@@ -693,6 +695,53 @@ managed_sftpgo_access() {
 
   value="$(sed -nE "s/^# TATER_SFTPGO_${protocol}_ACCESS=(disabled|private|public|https)$/\\1/p" "$env_file" 2>/dev/null | tail -n 1)"
   printf '%s' "${value:-disabled}"
+}
+
+managed_sftpgo_webdav_domain() {
+  local env_file="/etc/sftpgo/env.d/tater-tunnel.env"
+
+  sed -n 's/^# TATER_SFTPGO_WEBDAV_DOMAIN=//p' "$env_file" 2>/dev/null | tail -n 1
+}
+
+verify_sftpgo_selection_applied() {
+  local expected_sftp="$1"
+  local expected_ftp="$2"
+  local expected_webdav="$3"
+  local expected_domain="${4:-}"
+  local actual_sftp
+  local actual_ftp
+  local actual_webdav
+  local actual_domain
+  local message
+
+  actual_sftp="$(managed_sftpgo_access SFTP)"
+  actual_ftp="$(managed_sftpgo_access FTP)"
+  actual_webdav="$(managed_sftpgo_access WEBDAV)"
+  actual_domain="$(managed_sftpgo_webdav_domain)"
+
+  if [ "$actual_sftp" = "$expected_sftp" ] \
+    && [ "$actual_ftp" = "$expected_ftp" ] \
+    && [ "$actual_webdav" = "$expected_webdav" ] \
+    && { [ "$expected_webdav" != "https" ] || [ "$actual_domain" = "$expected_domain" ]; }; then
+    return 0
+  fi
+
+  message="SFTPGo did not save the selected protocol configuration.
+
+Selected: SFTP=$expected_sftp, FTP=$expected_ftp, WebDAV=$expected_webdav
+Applied:  SFTP=$actual_sftp, FTP=$actual_ftp, WebDAV=$actual_webdav"
+  if [ "$expected_webdav" = "https" ]; then
+    message="$message
+Selected WebDAV host: $expected_domain
+Applied WebDAV host:  ${actual_domain:-none}"
+  fi
+
+  if [ "$DIALOG_ENABLED" = "1" ]; then
+    dialog_message "SFTPGo configuration failed" "$message"
+  else
+    printf '\n%s%s%s\n' "$RED$BOLD" "$message" "$RESET" >&2
+  fi
+  return 1
 }
 
 configure_sftpgo_wireguard_webadmin() {
@@ -1934,6 +1983,11 @@ EOF
       sftpgo_args+=(--max-storage-gb "$sftpgo_storage_cap_gb")
     fi
     show_progress_handoff "SFTPGo install progress will appear below." "${sftpgo_args[@]}"
+    verify_sftpgo_selection_applied \
+      "$sftpgo_sftp_access" \
+      "$sftpgo_ftp_access" \
+      "$sftpgo_webdav_access" \
+      "$sftpgo_webdav_domain"
     cat <<EOF
 
 SFTPGo connection:
@@ -2207,6 +2261,20 @@ The token is used once and is not saved." yes)"
   fi
 
   show_progress_handoff "SFTPGo install progress will appear below." "${args[@]}"
+  verify_sftpgo_selection_applied \
+    "$sftpgo_sftp_access" \
+    "$sftpgo_ftp_access" \
+    "$sftpgo_webdav_access" \
+    "$sftpgo_webdav_domain"
+  if [ "$DIALOG_ENABLED" = "1" ]; then
+    dialog_message "SFTPGo ready" "Applied configuration
+
+SFTP: $(sftpgo_access_label "$sftpgo_sftp_access" 2022)
+FTP: $(sftpgo_access_label "$sftpgo_ftp_access" 2121)
+WebDAV: $(sftpgo_access_label "$sftpgo_webdav_access" 10080 "$sftpgo_webdav_domain")
+
+SFTPGo restarted successfully and every selected listener was verified."
+  fi
 }
 
 run_uninstall() {
@@ -2418,4 +2486,6 @@ main() {
   done
 }
 
-main "$@"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi

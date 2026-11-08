@@ -26,6 +26,8 @@
   directly, including output from `dialog` versions that quote selected tags.
 - SFTPGo setup now verifies every requested listener and waits for external
   WebDAV HTTPS to become usable before reporting a successful installation.
+- The optional SFTPGo menu now verifies its selected protocol modes against the
+  saved SFTPGo environment after installation and shows the applied result.
 
 # Tater Tunnel v0.2.11
 
