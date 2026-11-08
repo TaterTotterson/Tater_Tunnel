@@ -193,7 +193,7 @@ class WireGuardRuntimeTests(unittest.TestCase):
         self.assertIn("SocketBindAllow=tcp:$LISTEN_PORT", installer)
         self.assertIn("SocketBindAllow=udp:51888", installer)
 
-    def test_system_runtime_passes_setconf_over_stdin(self):
+    def test_system_runtime_passes_syncconf_over_stdin(self):
         state = {
             "claimed": True,
             "wireguardPort": 51888,
@@ -219,12 +219,12 @@ class WireGuardRuntimeTests(unittest.TestCase):
             runtime = WireGuardSystemRuntime(config_path, runner=runner)
             runtime.apply(state)
 
-            setconf_calls = [
-                call for call in runner.calls if call[0][:2] == ["wg", "setconf"]
+            syncconf_calls = [
+                call for call in runner.calls if call[0][:2] == ["wg", "syncconf"]
             ]
-            self.assertEqual(len(setconf_calls), 1)
-            command, input_text = setconf_calls[0]
-            self.assertEqual(command, ["wg", "setconf", "tater0", "/dev/stdin"])
+            self.assertEqual(len(syncconf_calls), 1)
+            command, input_text = syncconf_calls[0]
+            self.assertEqual(command, ["wg", "syncconf", "tater0", "/dev/stdin"])
             self.assertIn(f"PrivateKey = {PRIVATE_KEY}", input_text or "")
             self.assertNotIn("Address =", input_text or "")
             self.assertNotIn("MTU =", input_text or "")

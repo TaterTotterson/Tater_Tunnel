@@ -213,14 +213,14 @@ class WireGuardCommandRuntime(WireGuardConfigRuntime):
                 f"interface {self.interface_name} does not exist; use the system backend to create it"
             )
 
-        command = ["wg", "setconf", self.interface_name, "/dev/stdin"]
+        command = ["wg", "syncconf", self.interface_name, "/dev/stdin"]
         completed = self.runner.run(command, input_text=self._setconf_config())
         if completed.returncode != 0:
-            detail = completed.stderr.strip() or completed.stdout.strip() or "wg setconf failed"
+            detail = completed.stderr.strip() or completed.stdout.strip() or "wg syncconf failed"
             raise WireGuardRuntimeError(detail)
 
         result["lastAction"] = "applied"
-        result["message"] = "WireGuard config applied with wg setconf"
+        result["message"] = "WireGuard config applied with wg syncconf"
         result["command"] = " ".join(command)
         return result
 
@@ -243,7 +243,7 @@ class WireGuardSystemRuntime(WireGuardConfigRuntime):
 
         commands_run.append(
             self._run_system_command(
-                ["wg", "setconf", self.interface_name, "/dev/stdin"],
+                ["wg", "syncconf", self.interface_name, "/dev/stdin"],
                 input_text=self._setconf_config(),
             )
         )
@@ -339,14 +339,14 @@ class WireGuardClientCommandRuntime(WireGuardClientConfigRuntime):
                 f"interface {self.interface_name} does not exist; use the system backend to create it"
             )
 
-        command = ["wg", "setconf", self.interface_name, "/dev/stdin"]
+        command = ["wg", "syncconf", self.interface_name, "/dev/stdin"]
         completed = self.runner.run(command, input_text=self._setconf_config())
         if completed.returncode != 0:
-            detail = completed.stderr.strip() or completed.stdout.strip() or "wg setconf failed"
+            detail = completed.stderr.strip() or completed.stdout.strip() or "wg syncconf failed"
             raise WireGuardRuntimeError(detail)
 
         result["lastAction"] = "applied"
-        result["message"] = "Home Agent WireGuard config applied with wg setconf"
+        result["message"] = "Home Agent WireGuard config applied with wg syncconf"
         result["command"] = " ".join(command)
         return result
 
@@ -370,7 +370,7 @@ class WireGuardClientSystemRuntime(WireGuardClientConfigRuntime):
 
         commands_run.append(
             self._run_system_command(
-                ["wg", "setconf", self.interface_name, "/dev/stdin"],
+                ["wg", "syncconf", self.interface_name, "/dev/stdin"],
                 input_text=self._setconf_config(),
             )
         )

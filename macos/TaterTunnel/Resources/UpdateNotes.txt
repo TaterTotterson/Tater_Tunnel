@@ -1,1 +1,1 @@
-Fixes device enrollment and private tunnel requests on constrained network paths by using a safe WireGuard MTU. Existing pairing and routes are preserved.
+Fixes device QR enrollment by preserving the live Home Agent peer during device changes and reliably reloading updated macOS tunnel settings.

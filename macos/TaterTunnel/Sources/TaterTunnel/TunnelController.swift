@@ -53,6 +53,7 @@ final class TunnelController: NSObject, OSSystemExtensionRequestDelegate {
     private var appliedDigest = ""
     private var activationInFlight = false
     private var activationFinished = false
+    private var configurationInFlight = false
     private var cleanedMissingConfiguration = false
 
     override init() {
@@ -135,15 +136,14 @@ final class TunnelController: NSObject, OSSystemExtensionRequestDelegate {
     }
 
     private func configureAndStartTunnel(_ configuration: String, digest: String) {
-        if manager?.connection.status == .connecting || manager?.connection.status == .reasserting {
-            return
-        }
+        guard !configurationInFlight else { return }
+        configurationInFlight = true
         state = .connecting
         NETunnelProviderManager.loadAllFromPreferences { [weak self] managers, error in
             DispatchQueue.main.async {
                 guard let self else { return }
                 if let error {
-                    self.state = .failed(error.localizedDescription)
+                    self.finishConfiguration(with: .failed(error.localizedDescription))
                     return
                 }
 
@@ -153,47 +153,131 @@ final class TunnelController: NSObject, OSSystemExtensionRequestDelegate {
                 }) ?? NETunnelProviderManager()
                 self.manager = selected
 
-                let tunnelProtocol = NETunnelProviderProtocol()
-                tunnelProtocol.providerBundleIdentifier = Self.providerBundleIdentifier
-                tunnelProtocol.providerConfiguration = [
-                    "WgQuickConfig": configuration,
-                    "ConfigurationDigest": digest,
-                ]
-                tunnelProtocol.serverAddress = Self.endpoint(from: configuration) ?? "Tater VPS"
-                tunnelProtocol.disconnectOnSleep = false
-                tunnelProtocol.includeAllNetworks = false
-
-                selected.localizedDescription = "Tater Tunnel"
-                selected.protocolConfiguration = tunnelProtocol
-                selected.isEnabled = true
-                selected.isOnDemandEnabled = false
-                selected.saveToPreferences { [weak self] saveError in
-                    DispatchQueue.main.async {
-                        guard let self else { return }
-                        if let saveError {
-                            self.state = .failed(saveError.localizedDescription)
-                            return
-                        }
-                        selected.loadFromPreferences { [weak self] loadError in
-                            DispatchQueue.main.async {
-                                guard let self else { return }
-                                if let loadError {
-                                    self.state = .failed(loadError.localizedDescription)
-                                    return
-                                }
-                                do {
-                                    try selected.connection.startVPNTunnel()
-                                    self.appliedDigest = digest
-                                    self.state = .connecting
-                                } catch {
-                                    self.state = .failed(error.localizedDescription)
-                                }
+                let installedDigest = (selected.protocolConfiguration as? NETunnelProviderProtocol)?
+                    .providerConfiguration?["ConfigurationDigest"] as? String
+                if installedDigest == digest {
+                    self.appliedDigest = digest
+                    switch selected.connection.status {
+                    case .connected:
+                        self.finishConfiguration(with: .connected)
+                    case .connecting, .reasserting:
+                        self.finishConfiguration(with: .connecting)
+                    case .disconnecting:
+                        self.waitForTunnelToStop(selected, attemptsRemaining: 25) { stopped in
+                            if stopped {
+                                self.startTunnel(selected, digest: digest)
+                            } else {
+                                self.finishConfiguration(
+                                    with: .failed("The previous private tunnel did not stop in time")
+                                )
                             }
                         }
+                    case .disconnected, .invalid:
+                        self.startTunnel(selected, digest: digest)
+                    @unknown default:
+                        self.startTunnel(selected, digest: digest)
+                    }
+                    return
+                }
+
+                switch selected.connection.status {
+                case .connected, .connecting, .reasserting, .disconnecting:
+                    selected.connection.stopVPNTunnel()
+                    self.waitForTunnelToStop(selected, attemptsRemaining: 25) { stopped in
+                        if stopped {
+                            self.saveAndStartTunnel(selected, configuration: configuration, digest: digest)
+                        } else {
+                            self.finishConfiguration(
+                                with: .failed("The previous private tunnel did not stop in time")
+                            )
+                        }
+                    }
+                case .disconnected, .invalid:
+                    self.saveAndStartTunnel(selected, configuration: configuration, digest: digest)
+                @unknown default:
+                    self.saveAndStartTunnel(selected, configuration: configuration, digest: digest)
+                }
+            }
+        }
+    }
+
+    private func saveAndStartTunnel(
+        _ selected: NETunnelProviderManager,
+        configuration: String,
+        digest: String
+    ) {
+        let tunnelProtocol = NETunnelProviderProtocol()
+        tunnelProtocol.providerBundleIdentifier = Self.providerBundleIdentifier
+        tunnelProtocol.providerConfiguration = [
+            "WgQuickConfig": configuration,
+            "ConfigurationDigest": digest,
+        ]
+        tunnelProtocol.serverAddress = Self.endpoint(from: configuration) ?? "Tater VPS"
+        tunnelProtocol.disconnectOnSleep = false
+        tunnelProtocol.includeAllNetworks = false
+
+        selected.localizedDescription = "Tater Tunnel"
+        selected.protocolConfiguration = tunnelProtocol
+        selected.isEnabled = true
+        selected.isOnDemandEnabled = false
+        selected.saveToPreferences { [weak self] saveError in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let saveError {
+                    self.finishConfiguration(with: .failed(saveError.localizedDescription))
+                    return
+                }
+                selected.loadFromPreferences { [weak self] loadError in
+                    DispatchQueue.main.async {
+                        guard let self else { return }
+                        if let loadError {
+                            self.finishConfiguration(with: .failed(loadError.localizedDescription))
+                            return
+                        }
+                        self.startTunnel(selected, digest: digest)
                     }
                 }
             }
         }
+    }
+
+    private func startTunnel(_ selected: NETunnelProviderManager, digest: String) {
+        do {
+            try selected.connection.startVPNTunnel()
+            appliedDigest = digest
+            finishConfiguration(with: .connecting)
+        } catch {
+            finishConfiguration(with: .failed(error.localizedDescription))
+        }
+    }
+
+    private func waitForTunnelToStop(
+        _ selected: NETunnelProviderManager,
+        attemptsRemaining: Int,
+        completion: @escaping (Bool) -> Void
+    ) {
+        switch selected.connection.status {
+        case .disconnected, .invalid:
+            completion(true)
+        default:
+            guard attemptsRemaining > 0 else {
+                completion(false)
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                guard let self else { return }
+                self.waitForTunnelToStop(
+                    selected,
+                    attemptsRemaining: attemptsRemaining - 1,
+                    completion: completion
+                )
+            }
+        }
+    }
+
+    private func finishConfiguration(with state: TunnelState) {
+        configurationInFlight = false
+        self.state = state
     }
 
     private func removeStaleTunnelConfiguration() {

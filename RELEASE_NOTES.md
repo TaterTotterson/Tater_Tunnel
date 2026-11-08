@@ -1,14 +1,14 @@
-# Tater Tunnel v0.2.4
+# Tater Tunnel v0.2.5
 
-This patch fixes device enrollment and private management requests on network
-paths that cannot carry the previous WireGuard packet size.
+This patch fixes device QR enrollment being left on "Generating code" even
+though the VPS had already created the device.
 
-## Reliable private tunnel
+## Reliable device enrollment
 
-- The VPS, Home Agent, and generated device profiles now use a conservative
-  1280-byte MTU to avoid silent packet loss on constrained VPS and mobile paths.
-- Device approval and revocation return compact acknowledgements instead of
-  sending the complete VPS state through the private tunnel.
-- Live WireGuard diagnostics omit internal details that the Home Agent does not
-  need, keeping routine management responses small.
-- Generated phone QR profiles inherit the safe MTU automatically.
+- WireGuard peer changes now use `syncconf`, preserving the Home Agent peer's
+  live endpoint and handshake while a phone or laptop is added or revoked.
+- The enrollment response carrying the private device configuration can return
+  through the same tunnel without the VPS interrupting it.
+- The macOS app now detects a changed tunnel profile, stops the old Network
+  Extension connection, and starts it again with the updated settings.
+- Existing pairing, routes, and approved devices are preserved during updates.
