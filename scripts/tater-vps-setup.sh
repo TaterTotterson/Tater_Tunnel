@@ -473,9 +473,9 @@ select_sftpgo_protocols() {
       if ! selected="$(dialog --stdout --clear --separate-output \
         --backtitle "Tater Tunnel // VPS Setup Console" \
         --title "$CURRENT_DIALOG_TITLE" \
-        --checklist "Choose one or more file protocols.\n\nSpace toggles a protocol. Enter continues." \
+        --checklist "Select every file protocol you want to run.\n\nUse Space until each enabled protocol shows [X], then press Enter. Nothing is enabled by default." \
         "$DIALOG_HEIGHT" "$DIALOG_WIDTH" 8 \
-        SFTP "Encrypted file transfer over SSH (recommended)" on \
+        SFTP "Encrypted file transfer over SSH (recommended)" off \
         FTP "Legacy FTP with passive-mode support" off \
         WebDAV "File access for WebDAV-compatible clients" off)"; then
         return 130
@@ -488,7 +488,7 @@ select_sftpgo_protocols() {
         esac
       done <<< "$selected"
     else
-      confirm "Enable SFTP on 2022/tcp" yes && sftpgo_sftp_access="private"
+      confirm "Enable SFTP on 2022/tcp" no && sftpgo_sftp_access="private"
       confirm "Enable FTP on 2121/tcp with passive ports 50000-50100" no && sftpgo_ftp_access="private"
       confirm "Enable WebDAV on 10080/tcp" no && sftpgo_webdav_access="private"
     fi
@@ -507,7 +507,11 @@ select_sftpgo_protocols() {
 }
 
 choose_sftpgo_access() {
+  local tunnel_domain="${1:-}"
+  local webdav_default=""
+
   sftpgo_insecure_public="0"
+  sftpgo_webdav_domain=""
 
   if [ "$sftpgo_sftp_access" != "disabled" ] \
     && confirm "Allow SFTP from the public internet on 2022/tcp" no \
@@ -526,25 +530,63 @@ choose_sftpgo_access() {
   fi
 
   if [ "$sftpgo_webdav_access" != "disabled" ] \
-    && confirm "Allow WebDAV from the public internet on 10080/tcp" no \
-      "Private mode is encrypted by WireGuard.\nThe direct public listener uses HTTP, not HTTPS."; then
-    if confirm "I understand public WebDAV is unencrypted" no \
-      "Anyone able to observe the connection may read its credentials and files.\nUse WireGuard-only WebDAV unless you add a separate HTTPS proxy."; then
-      sftpgo_webdav_access="public"
-      sftpgo_insecure_public="1"
+    && confirm "Make WebDAV available externally with automatic HTTPS" no \
+      "Caddy will issue the certificate and proxy a dedicated subdomain to SFTPGo.\nPort 10080 stays blocked publicly. The subdomain must point directly to this VPS."; then
+    if [ -n "$tunnel_domain" ]; then
+      webdav_default="files.$(guess_dns_zone "$tunnel_domain")"
     fi
+    while true; do
+      sftpgo_webdav_domain="$(prompt_value "Dedicated WebDAV subdomain" "$webdav_default" yes)"
+      sftpgo_webdav_domain="$(normalize_hostname "$sftpgo_webdav_domain")"
+      if valid_dns_name "$sftpgo_webdav_domain" \
+        && { [ -z "$tunnel_domain" ] || [ "$sftpgo_webdav_domain" != "$(normalize_hostname "$tunnel_domain")" ]; }; then
+        break
+      fi
+      if [ "$DIALOG_ENABLED" = "1" ]; then
+        dialog_message "Invalid hostname" "Use a dedicated hostname such as files.example.com. It cannot be the tunnel hostname."
+      else
+        printf '%sUse a dedicated hostname such as files.example.com. It cannot be the tunnel hostname.%s\n' "$RED" "$RESET" >&2
+      fi
+    done
+    sftpgo_webdav_access="https"
   fi
 }
 
 sftpgo_access_label() {
   local access="$1"
   local port="$2"
+  local domain="${3:-}"
 
   case "$access" in
     public) printf 'public TCP %s' "$port" ;;
     private) printf 'WireGuard-only at 10.88.0.1:%s' "$port" ;;
+    https) printf 'HTTPS at https://%s/' "$domain" ;;
     disabled) printf 'disabled' ;;
   esac
+}
+
+normalize_hostname() {
+  local value="$1"
+
+  value="${value#http://}"
+  value="${value#https://}"
+  value="${value%%/*}"
+  value="${value%.}"
+  printf '%s' "${value,,}"
+}
+
+valid_dns_name() {
+  local value="$1"
+  [[ "$value" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] \
+    && [[ "$value" == *.* ]] \
+    && [[ "$value" != *..* ]]
+}
+
+installed_tater_domain() {
+  local caddyfile="/etc/caddy/Caddyfile"
+
+  [ -f "$caddyfile" ] || return 0
+  sed -nE 's/^([a-zA-Z0-9.-]+)[[:space:]]*\{[[:space:]]*$/\1/p' "$caddyfile" | head -n 1
 }
 
 guess_dns_zone() {
@@ -633,7 +675,7 @@ configure_managed_sftpgo_port() {
 
   case "$access" in
     public) configure_public_optional_service_port "$port" "$label" ;;
-    private) harden_optional_service_port "$port" "$label" ;;
+    private|https) harden_optional_service_port "$port" "$label" ;;
     disabled) block_optional_service_port "$port" "$label" ;;
     *)
       printf '%sUnknown managed SFTPGo access mode %s for %s; blocking it.%s\n' "$ORANGE" "$access" "$label" "$RESET" >&2
@@ -647,7 +689,7 @@ managed_sftpgo_access() {
   local env_file="/etc/sftpgo/env.d/tater-tunnel.env"
   local value
 
-  value="$(sed -nE "s/^# TATER_SFTPGO_${protocol}_ACCESS=(disabled|private|public)$/\\1/p" "$env_file" 2>/dev/null | tail -n 1)"
+  value="$(sed -nE "s/^# TATER_SFTPGO_${protocol}_ACCESS=(disabled|private|public|https)$/\\1/p" "$env_file" 2>/dev/null | tail -n 1)"
   printf '%s' "${value:-disabled}"
 }
 
@@ -740,6 +782,8 @@ migrate_installed_znc_webadmin() {
 harden_installed_optional_services() {
   local found_znc="0"
   local port
+  local webdav_access
+  local sftpgo_env_file="/etc/sftpgo/env.d/tater-tunnel.env"
 
   remove_legacy_znc_web_proxy
   if ! command -v ufw >/dev/null 2>&1 || ! ufw status | grep -q '^Status: active'; then
@@ -748,11 +792,17 @@ harden_installed_optional_services() {
   fi
 
   if command -v sftpgo >/dev/null 2>&1 || systemctl cat sftpgo.service >/dev/null 2>&1; then
-    if grep -q '^# TATER_SFTPGO_SFTP_ACCESS=' /etc/sftpgo/env.d/tater-tunnel.env 2>/dev/null; then
+    if grep -q '^# TATER_SFTPGO_SFTP_ACCESS=' "$sftpgo_env_file" 2>/dev/null; then
+      webdav_access="$(managed_sftpgo_access WEBDAV)"
+      if [ "$webdav_access" = "public" ]; then
+        sed -i 's/^# TATER_SFTPGO_WEBDAV_ACCESS=public$/# TATER_SFTPGO_WEBDAV_ACCESS=private/' "$sftpgo_env_file"
+        webdav_access="private"
+        printf '%sMigrated direct public WebDAV to WireGuard-only access. Re-run SFTPGo setup to add an HTTPS subdomain.%s\n' "$ORANGE" "$RESET"
+      fi
       configure_managed_sftpgo_port "$(managed_sftpgo_access SFTP)" 2022 "SFTPGo SFTP"
       configure_managed_sftpgo_port "$(managed_sftpgo_access FTP)" 2121 "SFTPGo FTP"
       configure_managed_sftpgo_port "$(managed_sftpgo_access FTP)" 50000:50100 "SFTPGo FTP passive data"
-      configure_managed_sftpgo_port "$(managed_sftpgo_access WEBDAV)" 10080 "SFTPGo WebDAV"
+      configure_managed_sftpgo_port "$webdav_access" 10080 "SFTPGo WebDAV"
     else
       if ufw show added 2>/dev/null | grep -Eq '^ufw allow (2022|2022/tcp)([[:space:]]|$)'; then
         configure_public_sftpgo_port
@@ -1654,6 +1704,7 @@ run_full_install() {
   local sftpgo_sftp_access="private"
   local sftpgo_ftp_access="disabled"
   local sftpgo_webdav_access="disabled"
+  local sftpgo_webdav_domain=""
   local sftpgo_insecure_public="0"
   local sftpgo_storage_cap_gb=""
   local sftpgo_args
@@ -1661,6 +1712,7 @@ run_full_install() {
   local cloudflare_zone=""
   local cloudflare_ipv4=""
   local cloudflare_args
+  local cloudflare_summary
   local final_pairing_code
 
   CURRENT_DIALOG_TITLE="Install on a blank VPS"
@@ -1735,7 +1787,7 @@ EOF
   if [ "$configure_firewall" = "1" ] && confirm "Install optional SFTPGo file server" no; then
     install_sftpgo="1"
     select_sftpgo_protocols
-    choose_sftpgo_access
+    choose_sftpgo_access "$domain"
     if confirm "Set a total cap for SFTPGo's default local storage" yes; then
       sftpgo_storage_cap_gb="$(prompt_positive_integer "Maximum SFTPGo storage in GiB" "$(suggest_sftpgo_storage_gb)")"
     fi
@@ -1751,6 +1803,18 @@ EOF
     cloudflare_ipv4="$(prompt_value "VPS public IPv4 (blank to auto-detect)" "" no)"
   fi
 
+  if [ "$configure_cloudflare" = "1" ]; then
+    cloudflare_summary="create the tunnel DNS record in $cloudflare_zone"
+    if [ "$sftpgo_webdav_access" = "https" ]; then
+      cloudflare_summary="create tunnel + WebDAV DNS records in $cloudflare_zone"
+    fi
+  else
+    cloudflare_summary="manual DNS setup"
+    if [ "$sftpgo_webdav_access" = "https" ]; then
+      cloudflare_summary="manual DNS for tunnel + WebDAV hostnames"
+    fi
+  fi
+
   wizard_header "3" "4" "Review installation"
   cat <<EOF
 
@@ -1763,9 +1827,9 @@ ${BOLD}Ready to install:${RESET}
   Firewall:    $([ "$configure_firewall" = "1" ] && printf 'enabled' || printf 'unchanged')
   ZNC:         $([ "$install_znc" = "1" ] && printf '10.88.0.1:%s through WireGuard' "$znc_port" || printf 'not installed')
   SFTPGo:      $([ "$install_sftpgo" = "1" ] && printf 'selected protocols below' || printf 'not installed')
-$([ "$install_sftpgo" = "1" ] && printf '    SFTP:      %s\n    FTP:       %s\n    WebDAV:    %s\n' "$(sftpgo_access_label "$sftpgo_sftp_access" 2022)" "$(sftpgo_access_label "$sftpgo_ftp_access" 2121)" "$(sftpgo_access_label "$sftpgo_webdav_access" 10080)")
+$([ "$install_sftpgo" = "1" ] && printf '    SFTP:      %s\n    FTP:       %s\n    WebDAV:    %s\n' "$(sftpgo_access_label "$sftpgo_sftp_access" 2022)" "$(sftpgo_access_label "$sftpgo_ftp_access" 2121)" "$(sftpgo_access_label "$sftpgo_webdav_access" 10080 "$sftpgo_webdav_domain")")
 $([ -n "$sftpgo_storage_cap_gb" ] && printf '  SFTP storage: %s GiB total cap\n' "$sftpgo_storage_cap_gb")
-  Cloudflare:  $([ "$configure_cloudflare" = "1" ] && printf 'create the tunnel DNS record in %s' "$cloudflare_zone" || printf 'manual DNS setup')
+  Cloudflare:  $cloudflare_summary
 
 EOF
   if ! confirm "Start install now" yes "Domain: $domain
@@ -1789,6 +1853,9 @@ WebAdmin: $([ "$install_sftpgo" = "1" ] && printf 'WireGuard-only at 10.88.0.1:8
     )
     if [ -n "$cloudflare_ipv4" ]; then
       cloudflare_args+=(--ipv4 "$cloudflare_ipv4")
+    fi
+    if [ "$sftpgo_webdav_access" = "https" ]; then
+      cloudflare_args+=(--record "$sftpgo_webdav_domain")
     fi
     show_progress_handoff "Cloudflare DNS progress will appear below." "${cloudflare_args[@]}"
   fi
@@ -1818,6 +1885,9 @@ EOF
       --ftp-access "$sftpgo_ftp_access"
       --webdav-access "$sftpgo_webdav_access"
     )
+    if [ "$sftpgo_webdav_access" = "https" ]; then
+      sftpgo_args+=(--webdav-domain "$sftpgo_webdav_domain")
+    fi
     if [ "$sftpgo_insecure_public" = "1" ]; then
       sftpgo_args+=(--allow-insecure-public-protocols)
     fi
@@ -1830,7 +1900,7 @@ EOF
 SFTPGo connection:
   SFTP: $(sftpgo_access_label "$sftpgo_sftp_access" 2022)
   FTP: $(sftpgo_access_label "$sftpgo_ftp_access" 2121)$([ "$sftpgo_ftp_access" != "disabled" ] && printf ' (passive 50000-50100)')
-  WebDAV: $(sftpgo_access_label "$sftpgo_webdav_access" 10080)
+  WebDAV: $(sftpgo_access_label "$sftpgo_webdav_access" 10080 "$sftpgo_webdav_domain")
   WebAdmin: http://10.88.0.1:8080/web/admin
 
 EOF
@@ -1986,7 +2056,9 @@ run_sftpgo_install() {
   local sftpgo_sftp_access="private"
   local sftpgo_ftp_access="disabled"
   local sftpgo_webdav_access="disabled"
+  local sftpgo_webdav_domain=""
   local sftpgo_insecure_public="0"
+  local tunnel_domain=""
   local storage_cap_gb=""
   local args
 
@@ -2001,14 +2073,15 @@ This installs the current open-source SFTPGo release and enables its systemd
 service at boot. Running it again updates SFTPGo while preserving its existing
 configuration, users, and files.
 
-Choose SFTP, FTP, WebDAV, or any combination. Each listener can stay private
-behind Tater Tunnel WireGuard or be opened publicly. WebAdmin always remains
-available only while connected through WireGuard.
+Choose SFTP, FTP, WebDAV, or any combination. SFTP and FTP can stay private or
+be opened directly. External WebDAV uses a dedicated Caddy HTTPS subdomain.
+WebAdmin always remains available only while connected through WireGuard.
 
 EOF
 
   select_sftpgo_protocols
-  choose_sftpgo_access
+  tunnel_domain="$(installed_tater_domain)"
+  choose_sftpgo_access "$tunnel_domain"
   if confirm "Set a total cap for SFTPGo's default local storage" yes; then
     storage_cap_gb="$(prompt_positive_integer "Maximum SFTPGo storage in GiB" "$(suggest_sftpgo_storage_gb)")"
   fi
@@ -2019,6 +2092,9 @@ EOF
     --ftp-access "$sftpgo_ftp_access"
     --webdav-access "$sftpgo_webdav_access"
   )
+  if [ "$sftpgo_webdav_access" = "https" ]; then
+    args+=(--webdav-domain "$sftpgo_webdav_domain")
+  fi
   if [ "$sftpgo_insecure_public" = "1" ]; then
     args+=(--allow-insecure-public-protocols)
   fi
@@ -2035,7 +2111,7 @@ ${BOLD}Ready to install or update SFTPGo:${RESET}
   Service:     enabled at boot
   SFTP:        $(sftpgo_access_label "$sftpgo_sftp_access" 2022)
   FTP:         $(sftpgo_access_label "$sftpgo_ftp_access" 2121)$([ "$sftpgo_ftp_access" != "disabled" ] && printf ' plus passive TCP 50000-50100')
-  WebDAV:      $(sftpgo_access_label "$sftpgo_webdav_access" 10080)
+  WebDAV:      $(sftpgo_access_label "$sftpgo_webdav_access" 10080 "$sftpgo_webdav_domain")
   WebAdmin:    http://10.88.0.1:8080/web/admin (WireGuard only)
   Firewall:    matched to each selected access mode; disabled ports are blocked
   Login:       connect WireGuard, create the first admin, then enable TOTP
@@ -2046,7 +2122,7 @@ EOF
 
   if ! confirm "Install or update SFTPGo now" yes "SFTP: $(sftpgo_access_label "$sftpgo_sftp_access" 2022)
 FTP: $(sftpgo_access_label "$sftpgo_ftp_access" 2121)
-WebDAV: $(sftpgo_access_label "$sftpgo_webdav_access" 10080)
+WebDAV: $(sftpgo_access_label "$sftpgo_webdav_access" 10080 "$sftpgo_webdav_domain")
 WebAdmin: http://10.88.0.1:8080/web/admin
 WebAdmin public access: blocked
 Storage cap: $([ -n "$storage_cap_gb" ] && printf '%s GiB' "$storage_cap_gb" || printf 'not installer-managed')"; then

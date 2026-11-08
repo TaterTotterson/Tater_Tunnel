@@ -5,6 +5,8 @@ SFTPGO_VERSION=""
 SFTP_ACCESS="private"
 FTP_ACCESS="disabled"
 WEBDAV_ACCESS="disabled"
+WEBDAV_ACCESS_EXPLICIT="0"
+WEBDAV_DOMAIN=""
 ALLOW_INSECURE_PUBLIC_PROTOCOLS="0"
 START_SERVICE="1"
 SFTP_PORT="2022"
@@ -14,6 +16,8 @@ FTP_PASSIVE_END="50100"
 WEBDAV_PORT="10080"
 WEB_PORT="8080"
 PUBLIC_IPV4=""
+CADDYFILE="/etc/caddy/Caddyfile"
+WEBDAV_CADDY_SNIPPET="/etc/caddy/tater-sites/sftpgo-webdav.caddy"
 TEMP_DIR=""
 MAX_STORAGE_GB=""
 STORAGE_DIR="/var/lib/sftpgo-storage"
@@ -39,14 +43,16 @@ Options:
                              Default: private
   --ftp-access MODE          FTP access: disabled, private, or public.
                              Default: disabled
-  --webdav-access MODE       WebDAV access: disabled, private, or public.
+  --webdav-access MODE       WebDAV access: disabled, private, or https.
                              Default: disabled
+  --webdav-domain DOMAIN     Dedicated HTTPS hostname for WebDAV, for example
+                             files.example.com. Implies https access
   --public-sftp              Alias for --sftp-access public.
   --public-ip ADDRESS        Public IPv4 returned to passive FTP clients.
                              Default: detect automatically
   --allow-insecure-public-protocols
-                             Required with public FTP or WebDAV. Their direct
-                             listeners do not provide TLS; prefer private mode.
+                             Required with public FTP. Direct FTP does not
+                             provide TLS; prefer private mode or SFTP.
   --max-storage-gb SIZE      Cap total default local SFTPGo storage at SIZE GiB.
                              Creates a persistent fixed-size filesystem and
                              keeps at least 2 GiB outside the cap during setup.
@@ -75,6 +81,11 @@ while [ "$#" -gt 0 ]; do
       ;;
     --webdav-access)
       WEBDAV_ACCESS="${2:?--webdav-access requires a value}"
+      WEBDAV_ACCESS_EXPLICIT="1"
+      shift 2
+      ;;
+    --webdav-domain)
+      WEBDAV_DOMAIN="${2:?--webdav-domain requires a value}"
       shift 2
       ;;
     --public-ip)
@@ -170,10 +181,58 @@ validate_access_mode() {
   esac
 }
 
+normalize_dns_name() {
+  local value="$1"
+
+  value="${value#http://}"
+  value="${value#https://}"
+  value="${value%%/*}"
+  value="${value%.}"
+  printf '%s' "${value,,}"
+}
+
+valid_dns_name() {
+  local value="$1"
+  [[ "$value" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] \
+    && [[ "$value" == *.* ]] \
+    && [[ "$value" != *..* ]]
+}
+
+domain_used_by_other_caddy_site() {
+  local file
+  local candidate
+
+  for file in "$CADDYFILE" /etc/caddy/tater-sites/*.caddy; do
+    [ -f "$file" ] || continue
+    [ "$file" = "$WEBDAV_CADDY_SNIPPET" ] && continue
+    candidate="$(awk -v domain="$WEBDAV_DOMAIN" '$1 == domain && $2 == "{" { print "yes"; exit }' "$file")"
+    [ "$candidate" != "yes" ] || return 0
+  done
+  return 1
+}
+
+normalize_webdav_options() {
+  if [ -n "$WEBDAV_DOMAIN" ]; then
+    WEBDAV_DOMAIN="$(normalize_dns_name "$WEBDAV_DOMAIN")"
+    if [ "$WEBDAV_ACCESS_EXPLICIT" = "1" ] && [ "$WEBDAV_ACCESS" != "https" ]; then
+      echo "--webdav-domain requires --webdav-access https." >&2
+      exit 2
+    fi
+    WEBDAV_ACCESS="https"
+  fi
+}
+
 validate_protocol_access() {
   validate_access_mode SFTP "$SFTP_ACCESS"
   validate_access_mode FTP "$FTP_ACCESS"
-  validate_access_mode WebDAV "$WEBDAV_ACCESS"
+  case "$WEBDAV_ACCESS" in
+    disabled|private|https) ;;
+    *)
+      echo "Invalid WebDAV access mode: $WEBDAV_ACCESS" >&2
+      echo "Use disabled, private, or https." >&2
+      exit 2
+      ;;
+  esac
 
   if [ "$SFTP_ACCESS" = "disabled" ] \
     && [ "$FTP_ACCESS" = "disabled" ] \
@@ -182,14 +241,33 @@ validate_protocol_access() {
     exit 2
   fi
 
-  if { [ "$FTP_ACCESS" = "public" ] || [ "$WEBDAV_ACCESS" = "public" ]; } \
-    && [ "$ALLOW_INSECURE_PUBLIC_PROTOCOLS" != "1" ]; then
+  if [ "$FTP_ACCESS" = "public" ] && [ "$ALLOW_INSECURE_PUBLIC_PROTOCOLS" != "1" ]; then
     cat >&2 <<'EOF'
-Public FTP and direct WebDAV are not encrypted by this installer.
-Use private mode through WireGuard, or repeat with
+Public FTP is not encrypted by this installer.
+Use private mode through WireGuard or SFTP, or repeat with
 --allow-insecure-public-protocols after accepting that risk.
 EOF
     exit 2
+  fi
+
+  if [ "$WEBDAV_ACCESS" = "https" ]; then
+    if ! valid_dns_name "$WEBDAV_DOMAIN"; then
+      echo "HTTPS WebDAV requires a valid --webdav-domain such as files.example.com." >&2
+      exit 2
+    fi
+    if domain_used_by_other_caddy_site; then
+      echo "$WEBDAV_DOMAIN is already used by another Caddy site." >&2
+      echo "Choose a dedicated WebDAV subdomain." >&2
+      exit 2
+    fi
+    if ! command -v caddy >/dev/null 2>&1 || [ ! -f "$CADDYFILE" ]; then
+      echo "HTTPS WebDAV requires the Tater Tunnel Caddy installation." >&2
+      exit 1
+    fi
+    if ! grep -Eq '^[[:space:]]*import[[:space:]]+tater-sites/\*\.caddy[[:space:]]*$' "$CADDYFILE"; then
+      echo "$CADDYFILE does not import managed Tater site snippets." >&2
+      exit 1
+    fi
   fi
 }
 
@@ -484,6 +562,7 @@ configure_tater_defaults() {
 # TATER_SFTPGO_SFTP_ACCESS=$SFTP_ACCESS
 # TATER_SFTPGO_FTP_ACCESS=$FTP_ACCESS
 # TATER_SFTPGO_WEBDAV_ACCESS=$WEBDAV_ACCESS
+# TATER_SFTPGO_WEBDAV_DOMAIN=$WEBDAV_DOMAIN
 
 # Explicit protocol listeners. Port 0 disables a protocol.
 SFTPGO_SFTPD__BINDINGS__0__ADDRESS=0.0.0.0
@@ -498,6 +577,8 @@ SFTPGO_FTPD__PASSIVE_PORT_RANGE__END=$FTP_PASSIVE_END
 SFTPGO_FTPD__DISABLE_ACTIVE_MODE=true
 SFTPGO_WEBDAVD__BINDINGS__0__ADDRESS=0.0.0.0
 SFTPGO_WEBDAVD__BINDINGS__0__PORT=$webdav_port
+SFTPGO_WEBDAVD__BINDINGS__0__PROXY_ALLOWED=127.0.0.1/32,::1/128
+SFTPGO_WEBDAVD__BINDINGS__0__CLIENT_IP_PROXY_HEADER=X-Forwarded-For
 
 # Listen on the host while UFW limits WebAdmin to the Tater WireGuard interface.
 SFTPGO_HTTPD__BINDINGS__0__ADDRESS=0.0.0.0
@@ -538,7 +619,7 @@ configure_tcp_access() {
     public)
       ufw allow "$port/tcp" comment "SFTPGo $label"
       ;;
-    private)
+    private|https)
       ufw allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$port" proto tcp comment "SFTPGo $label private WireGuard"
       ufw deny in to any port "$port" proto tcp comment "Block public SFTPGo $label"
       ;;
@@ -546,6 +627,73 @@ configure_tcp_access() {
       ufw deny in to any port "$port" proto tcp comment "Block disabled SFTPGo $label"
       ;;
   esac
+}
+
+reload_caddy() {
+  caddy validate --adapter caddyfile --config "$CADDYFILE" >/dev/null
+  systemctl reload caddy || systemctl restart caddy
+}
+
+configure_webdav_proxy() {
+  local snippet_dir
+  local backup_file=""
+  local temp_file
+
+  snippet_dir="$(dirname "$WEBDAV_CADDY_SNIPPET")"
+
+  if [ "$WEBDAV_ACCESS" != "https" ]; then
+    if [ -f "$WEBDAV_CADDY_SNIPPET" ]; then
+      backup_file="$(mktemp /tmp/tater-webdav-caddy-backup.XXXXXX)"
+      cp -a "$WEBDAV_CADDY_SNIPPET" "$backup_file"
+      rm -f "$WEBDAV_CADDY_SNIPPET"
+      if ! reload_caddy; then
+        install -m 0644 "$backup_file" "$WEBDAV_CADDY_SNIPPET"
+        reload_caddy || true
+        rm -f "$backup_file"
+        echo "Could not remove the previous WebDAV HTTPS proxy." >&2
+        exit 1
+      fi
+      rm -f "$backup_file"
+    fi
+    return
+  fi
+
+  install -d -m 0755 "$snippet_dir"
+  temp_file="$(mktemp "$snippet_dir/.sftpgo-webdav.XXXXXX")"
+  cat > "$temp_file" <<EOF
+$WEBDAV_DOMAIN {
+	reverse_proxy 127.0.0.1:$WEBDAV_PORT {
+		header_up Host {host}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+}
+EOF
+  caddy fmt --overwrite "$temp_file" >/dev/null
+  if [ -f "$WEBDAV_CADDY_SNIPPET" ]; then
+    backup_file="$(mktemp /tmp/tater-webdav-caddy-backup.XXXXXX)"
+    cp -a "$WEBDAV_CADDY_SNIPPET" "$backup_file"
+  fi
+  install -m 0644 "$temp_file" "$WEBDAV_CADDY_SNIPPET"
+  rm -f "$temp_file"
+
+  if ! reload_caddy; then
+    if [ -n "$backup_file" ]; then
+      install -m 0644 "$backup_file" "$WEBDAV_CADDY_SNIPPET"
+    else
+      rm -f "$WEBDAV_CADDY_SNIPPET"
+    fi
+    reload_caddy || true
+    rm -f "$backup_file"
+    echo "Could not enable the WebDAV HTTPS proxy; the previous Caddy configuration was restored." >&2
+    exit 1
+  fi
+  rm -f "$backup_file"
 }
 
 configure_firewall() {
@@ -597,13 +745,19 @@ print_summary() {
   local sftp_note=""
   local ftp_note=""
   local webdav_note=""
+  local webdav_summary="disabled"
 
   [ "$SFTP_ACCESS" = "public" ] && sftp_host="$public_host"
   [ "$FTP_ACCESS" = "public" ] && ftp_host="$public_host"
-  [ "$WEBDAV_ACCESS" = "public" ] && webdav_host="$public_host"
+  [ "$WEBDAV_ACCESS" = "https" ] && webdav_host="$WEBDAV_DOMAIN"
   [ "$SFTP_ACCESS" = "private" ] && sftp_note="; connect WireGuard first"
   [ "$FTP_ACCESS" = "private" ] && ftp_note="; connect WireGuard first"
   [ "$WEBDAV_ACCESS" = "private" ] && webdav_note="; connect WireGuard first"
+  if [ "$WEBDAV_ACCESS" = "https" ]; then
+    webdav_summary="https://$WEBDAV_DOMAIN/ (Caddy automatic HTTPS)"
+  elif [ "$WEBDAV_ACCESS" = "private" ]; then
+    webdav_summary="http://$webdav_host:$WEBDAV_PORT/ ($WEBDAV_ACCESS$webdav_note)"
+  fi
 
   cat <<EOF
 
@@ -619,7 +773,7 @@ Service:
 File protocols:
   SFTP:  $([ "$SFTP_ACCESS" = "disabled" ] && printf 'disabled' || printf '%s:%s (%s%s)' "$sftp_host" "$SFTP_PORT" "$SFTP_ACCESS" "$sftp_note")
   FTP:   $([ "$FTP_ACCESS" = "disabled" ] && printf 'disabled' || printf '%s:%s, passive %s-%s (%s%s)' "$ftp_host" "$FTP_PORT" "$FTP_PASSIVE_START" "$FTP_PASSIVE_END" "$FTP_ACCESS" "$ftp_note")
-  WebDAV:$([ "$WEBDAV_ACCESS" = "disabled" ] && printf ' disabled' || printf ' http://%s:%s/ (%s%s)' "$webdav_host" "$WEBDAV_PORT" "$WEBDAV_ACCESS" "$webdav_note")
+  WebDAV: $webdav_summary
 
 First WebAdmin setup:
   Connect Tater Tunnel WireGuard, then open:
@@ -654,12 +808,12 @@ SFTPGo paths:
 Firewall:
   SFTP $SFTP_ACCESS on $SFTP_PORT/tcp.
   FTP $FTP_ACCESS on $FTP_PORT/tcp and $FTP_PASSIVE_START:$FTP_PASSIVE_END/tcp.
-  WebDAV $WEBDAV_ACCESS on $WEBDAV_PORT/tcp.
+  WebDAV $WEBDAV_ACCESS on local port $WEBDAV_PORT/tcp.$([ "$WEBDAV_ACCESS" = "https" ] && printf ' Public access uses Caddy on 443/tcp.')
   Allowed WebAdmin on $WEB_PORT/tcp only through WireGuard and blocked it publicly.
 
-$([ "$FTP_ACCESS" = "public" ] || [ "$WEBDAV_ACCESS" = "public" ] && cat <<'WARNING'
-WARNING: Public FTP and direct WebDAV are unencrypted. Credentials and files can
-be observed in transit. Prefer SFTP, or switch these listeners to private mode.
+$([ "$FTP_ACCESS" = "public" ] && cat <<'WARNING'
+WARNING: Public FTP is unencrypted. Credentials and files can be observed in
+transit. Prefer SFTP, or switch FTP to private mode.
 WARNING
 )
 
@@ -670,6 +824,7 @@ require_root
 require_supported_system
 validate_version
 validate_storage_size
+normalize_webdav_options
 validate_protocol_access
 install_download_tools
 resolve_public_ipv4
@@ -678,4 +833,5 @@ install_package
 configure_storage_cap
 configure_tater_defaults
 start_service
+configure_webdav_proxy
 print_summary

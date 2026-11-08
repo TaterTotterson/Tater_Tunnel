@@ -7,6 +7,7 @@ STATE_DIR="/var/lib/tater-tunnel"
 CONFIG_DIR="/etc/tater-tunnel"
 CADDYFILE="/etc/caddy/Caddyfile"
 ZNC_CADDY_SNIPPET="/etc/caddy/tater-sites/znc-web.caddy"
+WEBDAV_CADDY_SNIPPET="/etc/caddy/tater-sites/sftpgo-webdav.caddy"
 LISTEN_PORT="4174"
 DOMAIN=""
 FAILURES=0
@@ -109,6 +110,7 @@ check_sftpgo_access() {
   case "$access" in
     public) check_public_optional_port "$added" "$port" "$label" ;;
     private) check_private_optional_port "$added" "$port" "$label" ;;
+    https) check_private_optional_port "$added" "$port" "$label backend" ;;
     disabled) check_disabled_optional_port "$added" "$port" "$label" ;;
     *) fail "$label has an unknown managed access mode: $access" ;;
   esac
@@ -119,7 +121,7 @@ managed_sftpgo_access() {
   local env_file="/etc/sftpgo/env.d/tater-tunnel.env"
   local value
 
-  value="$(sed -nE "s/^# TATER_SFTPGO_${protocol}_ACCESS=(disabled|private|public)$/\\1/p" "$env_file" 2>/dev/null | tail -n 1)"
+  value="$(sed -nE "s/^# TATER_SFTPGO_${protocol}_ACCESS=(disabled|private|public|https)$/\\1/p" "$env_file" 2>/dev/null | tail -n 1)"
   printf '%s' "${value:-disabled}"
 }
 
@@ -128,16 +130,31 @@ check_sftpgo_port() {
   local env_file="/etc/sftpgo/env.d/tater-tunnel.env"
   local ftp_access
   local webdav_access
+  local webdav_domain
 
   if grep -q '^# TATER_SFTPGO_SFTP_ACCESS=' "$env_file" 2>/dev/null; then
     ftp_access="$(managed_sftpgo_access FTP)"
     webdav_access="$(managed_sftpgo_access WEBDAV)"
+    webdav_domain="$(sed -nE 's/^# TATER_SFTPGO_WEBDAV_DOMAIN=([a-zA-Z0-9.-]+)$/\1/p' "$env_file" | tail -n 1)"
     check_sftpgo_access "$added" "$(managed_sftpgo_access SFTP)" 2022 "SFTPGo SFTP"
     check_sftpgo_access "$added" "$ftp_access" 2121 "SFTPGo FTP"
     check_sftpgo_access "$added" "$ftp_access" 50000:50100 "SFTPGo FTP passive data"
     check_sftpgo_access "$added" "$webdav_access" 10080 "SFTPGo WebDAV"
-    if [ "$ftp_access" = "public" ] || [ "$webdav_access" = "public" ]; then
-      warn "Public FTP or direct WebDAV is unencrypted; prefer SFTP or WireGuard-only access"
+    if [ "$ftp_access" = "public" ]; then
+      warn "Public FTP is unencrypted; prefer SFTP or WireGuard-only access"
+    fi
+    if [ "$webdav_access" = "https" ]; then
+      if [ -n "$webdav_domain" ] \
+        && [ -f "$WEBDAV_CADDY_SNIPPET" ] \
+        && grep -Fqx "$webdav_domain {" "$WEBDAV_CADDY_SNIPPET" \
+        && grep -Eq '^[[:space:]]*reverse_proxy[[:space:]]+127\.0\.0\.1:10080([[:space:]]+\{)?[[:space:]]*$' "$WEBDAV_CADDY_SNIPPET" \
+        && grep -Eq '^[[:space:]]*header_up[[:space:]]+Host[[:space:]]+\{host\}[[:space:]]*$' "$WEBDAV_CADDY_SNIPPET"; then
+        pass "SFTPGo WebDAV HTTPS proxy is configured for $webdav_domain"
+      else
+        fail "SFTPGo WebDAV HTTPS proxy is missing or does not match its managed domain"
+      fi
+    elif [ -f "$WEBDAV_CADDY_SNIPPET" ]; then
+      fail "SFTPGo WebDAV HTTPS proxy remains enabled while external WebDAV is off"
     fi
   elif grep -Eq '^ufw allow (2022|2022/tcp)([[:space:]]|$)' <<< "$added"; then
     check_public_optional_port "$added" 2022 "SFTPGo SFTP"

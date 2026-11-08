@@ -1,7 +1,9 @@
 # Next release
 
-- SFTPGo setup now offers SFTP, FTP, WebDAV, or any combination, with an
-  independent public or WireGuard-only firewall boundary for each listener.
+- SFTPGo setup now offers SFTP, FTP, WebDAV, or any combination, with managed
+  firewall boundaries for every listener.
+- External WebDAV uses a dedicated Caddy subdomain with automatic HTTPS while
+  its backend port remains blocked publicly.
 - FTP passive ports are configured and managed together with its control port.
 - Rerunning setup removes stale allow rules for protocols that are disabled.
 - The VPS setup console now uses a black, orange, and gray Tater theme.
