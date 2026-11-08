@@ -51,8 +51,9 @@ curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/sc
 
 Choose `Install on a blank VPS` on a fresh Debian or Ubuntu VPS. The guided
 installer configures WireGuard, Caddy, UFW, automatic HTTPS, and the systemd
-service. It can also install WireGuard-only ZNC and SFTPGo with a choice of
-WireGuard-only or public SFTP access. Both browser admin pages remain private.
+service. It can also install WireGuard-only ZNC and SFTPGo with selectable
+SFTP, FTP, and WebDAV listeners. Each file protocol can be private or public,
+while both browser admin pages remain private.
 
 If logged in directly as root, run the command without `sudo` first. The menu
 creates a normal sudo user and continues the full install in the same session.
@@ -70,8 +71,10 @@ Home Agent.
 Useful VPS details:
 
 - Public base ports: `80/tcp`, `443/tcp`, `51888/udp`, and the selected SSH port.
-- SFTPGo optionally adds public `2022/tcp`; its WebAdmin is WireGuard-only at
-  `http://10.88.0.1:8080/web/admin`.
+- SFTPGo can enable SFTP on `2022/tcp`, FTP on `2121/tcp` plus passive
+  `50000-50100/tcp`, and WebDAV on `10080/tcp`. Private listeners are limited
+  to WireGuard; selected public listeners are opened explicitly. WebAdmin is
+  always WireGuard-only at `http://10.88.0.1:8080/web/admin`.
 - ZNC IRC stays behind WireGuard on its selected listener port, and its
   WebAdmin is available at `http://10.88.0.1:6698/`.
 - Service status: `sudo systemctl status tater-tunnel-vps`

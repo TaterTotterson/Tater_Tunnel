@@ -1,3 +1,11 @@
+# Next release
+
+- SFTPGo setup now offers SFTP, FTP, WebDAV, or any combination, with an
+  independent public or WireGuard-only firewall boundary for each listener.
+- FTP passive ports are configured and managed together with its control port.
+- Rerunning setup removes stale allow rules for protocols that are disabled.
+- The VPS setup console now uses a black, orange, and gray Tater theme.
+
 # Tater Tunnel v0.2.11
 
 This update makes VPS setup easier to follow and gives optional services

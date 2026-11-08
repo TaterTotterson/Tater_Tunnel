@@ -65,28 +65,84 @@ check_private_optional_port() {
   fi
 }
 
-check_public_sftpgo_port() {
+check_public_optional_port() {
   local added="$1"
+  local port="$2"
+  local label="$3"
 
-  if grep -Eq '^ufw allow (2022|2022/tcp)([[:space:]]|$)' <<< "$added"; then
-    pass "SFTPGo public SFTP is allowed on TCP 2022"
+  if grep -Eq "^ufw allow (${port}|${port}/tcp)([[:space:]]|$)" <<< "$added"; then
+    pass "$label is allowed publicly on TCP $port"
   else
-    fail "SFTPGo is missing its public TCP 2022 allow rule"
+    fail "$label is missing its public TCP $port allow rule"
   fi
-  if grep -Fq 'deny in to any port 2022 proto tcp' <<< "$added"; then
-    fail "SFTPGo TCP 2022 is still blocked on public interfaces"
+  if grep -Fq "deny in to any port ${port} proto tcp" <<< "$added"; then
+    fail "$label TCP $port is still blocked on public interfaces"
   else
-    pass "SFTPGo TCP 2022 has no conflicting public deny rule"
+    pass "$label TCP $port has no conflicting public deny rule"
   fi
+}
+
+check_disabled_optional_port() {
+  local added="$1"
+  local port="$2"
+  local label="$3"
+
+  if grep -Eq "^ufw allow (${port}|${port}/tcp)([[:space:]]|$)" <<< "$added" \
+    || grep -Fq "allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port ${port} proto tcp" <<< "$added"; then
+    fail "$label is disabled but still has an allow rule on TCP $port"
+  else
+    pass "$label is disabled with no TCP $port allow rule"
+  fi
+  if grep -Fq "deny in to any port ${port} proto tcp" <<< "$added"; then
+    pass "$label disabled TCP $port is denied"
+  else
+    fail "$label disabled TCP $port is missing its deny rule"
+  fi
+}
+
+check_sftpgo_access() {
+  local added="$1"
+  local access="$2"
+  local port="$3"
+  local label="$4"
+
+  case "$access" in
+    public) check_public_optional_port "$added" "$port" "$label" ;;
+    private) check_private_optional_port "$added" "$port" "$label" ;;
+    disabled) check_disabled_optional_port "$added" "$port" "$label" ;;
+    *) fail "$label has an unknown managed access mode: $access" ;;
+  esac
+}
+
+managed_sftpgo_access() {
+  local protocol="$1"
+  local env_file="/etc/sftpgo/env.d/tater-tunnel.env"
+  local value
+
+  value="$(sed -nE "s/^# TATER_SFTPGO_${protocol}_ACCESS=(disabled|private|public)$/\\1/p" "$env_file" 2>/dev/null | tail -n 1)"
+  printf '%s' "${value:-disabled}"
 }
 
 check_sftpgo_port() {
   local added="$1"
+  local env_file="/etc/sftpgo/env.d/tater-tunnel.env"
+  local ftp_access
+  local webdav_access
 
-  if grep -Eq '^ufw allow (2022|2022/tcp)([[:space:]]|$)' <<< "$added"; then
-    check_public_sftpgo_port "$added"
+  if grep -q '^# TATER_SFTPGO_SFTP_ACCESS=' "$env_file" 2>/dev/null; then
+    ftp_access="$(managed_sftpgo_access FTP)"
+    webdav_access="$(managed_sftpgo_access WEBDAV)"
+    check_sftpgo_access "$added" "$(managed_sftpgo_access SFTP)" 2022 "SFTPGo SFTP"
+    check_sftpgo_access "$added" "$ftp_access" 2121 "SFTPGo FTP"
+    check_sftpgo_access "$added" "$ftp_access" 50000:50100 "SFTPGo FTP passive data"
+    check_sftpgo_access "$added" "$webdav_access" 10080 "SFTPGo WebDAV"
+    if [ "$ftp_access" = "public" ] || [ "$webdav_access" = "public" ]; then
+      warn "Public FTP or direct WebDAV is unencrypted; prefer SFTP or WireGuard-only access"
+    fi
+  elif grep -Eq '^ufw allow (2022|2022/tcp)([[:space:]]|$)' <<< "$added"; then
+    check_public_optional_port "$added" 2022 "SFTPGo SFTP"
   else
-    check_private_optional_port "$added" 2022 SFTPGo
+    check_private_optional_port "$added" 2022 "SFTPGo SFTP"
   fi
   check_private_optional_port "$added" 8080 "SFTPGo WebAdmin"
 }

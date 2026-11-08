@@ -19,6 +19,7 @@ DIALOG_ENABLED="0"
 DIALOG_HEIGHT="23"
 DIALOG_WIDTH="79"
 CURRENT_DIALOG_TITLE="Tater Tunnel VPS Setup"
+DIALOG_THEME_FILE=""
 
 if [ -f "$SCRIPT_DIR/install-vps-full.sh" ] && [ -f "$SCRIPT_DIR/install-vps-agent.sh" ] && [ -f "$SCRIPT_DIR/uninstall-vps.sh" ] && [ -f "$SCRIPT_DIR/install-znc.sh" ] && [ -f "$SCRIPT_DIR/install-sftpgo.sh" ] && [ -f "$SCRIPT_DIR/configure-cloudflare-dns.sh" ]; then
   IN_REPO_SOURCE="1"
@@ -139,6 +140,65 @@ set_dialog_dimensions() {
   DIALOG_WIDTH=$((columns - 1))
 }
 
+cleanup_setup_ui() {
+  if [ -n "$DIALOG_THEME_FILE" ] && [ -f "$DIALOG_THEME_FILE" ]; then
+    rm -f "$DIALOG_THEME_FILE"
+  fi
+}
+
+create_tater_dialog_theme() {
+  DIALOG_THEME_FILE="$(mktemp /tmp/tater-tunnel-dialogrc.XXXXXX)"
+  cat > "$DIALOG_THEME_FILE" <<'EOF'
+aspect = 0
+separate_widget = ""
+tab_len = 0
+visit_items = OFF
+use_shadow = OFF
+use_colors = ON
+
+# Tater Tunnel: black canvas, warm orange accents, soft gray text.
+screen_color = (WHITE,BLACK,OFF)
+shadow_color = (BLACK,BLACK,OFF)
+dialog_color = (WHITE,BLACK,OFF)
+title_color = (YELLOW,BLACK,ON)
+border_color = (YELLOW,BLACK,ON)
+border2_color = border_color
+button_active_color = (BLACK,YELLOW,ON)
+button_inactive_color = (WHITE,BLACK,OFF)
+button_key_active_color = (BLACK,YELLOW,ON)
+button_key_inactive_color = (YELLOW,BLACK,ON)
+button_label_active_color = (BLACK,YELLOW,ON)
+button_label_inactive_color = (WHITE,BLACK,OFF)
+inputbox_color = (WHITE,BLACK,OFF)
+inputbox_border_color = (YELLOW,BLACK,ON)
+inputbox_border2_color = inputbox_border_color
+searchbox_color = (WHITE,BLACK,OFF)
+searchbox_title_color = (YELLOW,BLACK,ON)
+searchbox_border_color = (YELLOW,BLACK,ON)
+searchbox_border2_color = searchbox_border_color
+position_indicator_color = (YELLOW,BLACK,ON)
+menubox_color = (WHITE,BLACK,OFF)
+menubox_border_color = (WHITE,BLACK,OFF)
+menubox_border2_color = menubox_border_color
+item_color = (WHITE,BLACK,OFF)
+item_selected_color = (BLACK,YELLOW,ON)
+tag_color = (YELLOW,BLACK,ON)
+tag_selected_color = (BLACK,YELLOW,ON)
+tag_key_color = (YELLOW,BLACK,ON)
+tag_key_selected_color = (BLACK,YELLOW,ON)
+check_color = (YELLOW,BLACK,ON)
+check_selected_color = (BLACK,YELLOW,ON)
+uarrow_color = (YELLOW,BLACK,ON)
+darrow_color = (YELLOW,BLACK,ON)
+itemhelp_color = (WHITE,BLACK,OFF)
+form_active_text_color = (BLACK,YELLOW,ON)
+form_text_color = (WHITE,BLACK,OFF)
+form_item_readonly_color = (WHITE,BLACK,OFF)
+gauge_color = (YELLOW,BLACK,ON)
+EOF
+  export DIALOGRC="$DIALOG_THEME_FILE"
+}
+
 enable_dialog_ui() {
   if [ "${TATER_TUNNEL_MENU:-}" = "numbered" ] || [ ! -t 0 ] || [ ! -t 1 ]; then
     return
@@ -152,10 +212,13 @@ enable_dialog_ui() {
     fi
   fi
   if command -v dialog >/dev/null 2>&1; then
+    create_tater_dialog_theme
     set_dialog_dimensions
     DIALOG_ENABLED="1"
   fi
 }
+
+trap cleanup_setup_ui EXIT
 
 dialog_message() {
   local title="$1"
@@ -397,6 +460,93 @@ suggest_sftpgo_storage_gb() {
   printf '%s' "$suggestion"
 }
 
+select_sftpgo_protocols() {
+  local selected=""
+  local item
+
+  while true; do
+    sftpgo_sftp_access="disabled"
+    sftpgo_ftp_access="disabled"
+    sftpgo_webdav_access="disabled"
+    if [ "$DIALOG_ENABLED" = "1" ]; then
+      set_dialog_dimensions
+      if ! selected="$(dialog --stdout --clear --separate-output \
+        --backtitle "Tater Tunnel // VPS Setup Console" \
+        --title "$CURRENT_DIALOG_TITLE" \
+        --checklist "Choose one or more file protocols.\n\nSpace toggles a protocol. Enter continues." \
+        "$DIALOG_HEIGHT" "$DIALOG_WIDTH" 8 \
+        SFTP "Encrypted file transfer over SSH (recommended)" on \
+        FTP "Legacy FTP with passive-mode support" off \
+        WebDAV "File access for WebDAV-compatible clients" off)"; then
+        return 130
+      fi
+      while read -r item; do
+        case "$item" in
+          SFTP) sftpgo_sftp_access="private" ;;
+          FTP) sftpgo_ftp_access="private" ;;
+          WebDAV) sftpgo_webdav_access="private" ;;
+        esac
+      done <<< "$selected"
+    else
+      confirm "Enable SFTP on 2022/tcp" yes && sftpgo_sftp_access="private"
+      confirm "Enable FTP on 2121/tcp with passive ports 50000-50100" no && sftpgo_ftp_access="private"
+      confirm "Enable WebDAV on 10080/tcp" no && sftpgo_webdav_access="private"
+    fi
+
+    if [ "$sftpgo_sftp_access" != "disabled" ] \
+      || [ "$sftpgo_ftp_access" != "disabled" ] \
+      || [ "$sftpgo_webdav_access" != "disabled" ]; then
+      return 0
+    fi
+    if [ "$DIALOG_ENABLED" = "1" ]; then
+      dialog_message "Choose a protocol" "Enable at least one SFTPGo file protocol."
+    else
+      printf '%sEnable at least one file protocol.%s\n' "$RED" "$RESET" >&2
+    fi
+  done
+}
+
+choose_sftpgo_access() {
+  sftpgo_insecure_public="0"
+
+  if [ "$sftpgo_sftp_access" != "disabled" ] \
+    && confirm "Allow SFTP from the public internet on 2022/tcp" no \
+      "SFTP is encrypted and can be safely exposed for accounts you create.\nPrivate mode requires Tater Tunnel WireGuard."; then
+    sftpgo_sftp_access="public"
+  fi
+
+  if [ "$sftpgo_ftp_access" != "disabled" ] \
+    && confirm "Allow FTP from the public internet" no \
+      "Private mode opens TCP 2121 and passive TCP 50000-50100 only on WireGuard.\nPublic FTP sends passwords and files without encryption."; then
+    if confirm "I understand public FTP is unencrypted" no \
+      "Anyone able to observe the connection may read its credentials and files.\nSFTP is the safer public option."; then
+      sftpgo_ftp_access="public"
+      sftpgo_insecure_public="1"
+    fi
+  fi
+
+  if [ "$sftpgo_webdav_access" != "disabled" ] \
+    && confirm "Allow WebDAV from the public internet on 10080/tcp" no \
+      "Private mode is encrypted by WireGuard.\nThe direct public listener uses HTTP, not HTTPS."; then
+    if confirm "I understand public WebDAV is unencrypted" no \
+      "Anyone able to observe the connection may read its credentials and files.\nUse WireGuard-only WebDAV unless you add a separate HTTPS proxy."; then
+      sftpgo_webdav_access="public"
+      sftpgo_insecure_public="1"
+    fi
+  fi
+}
+
+sftpgo_access_label() {
+  local access="$1"
+  local port="$2"
+
+  case "$access" in
+    public) printf 'public TCP %s' "$port" ;;
+    private) printf 'WireGuard-only at 10.88.0.1:%s' "$port" ;;
+    disabled) printf 'disabled' ;;
+  esac
+}
+
 guess_dns_zone() {
   local hostname="$1"
 
@@ -451,11 +601,54 @@ harden_optional_service_port() {
 }
 
 configure_public_sftpgo_port() {
-  ufw --force delete allow 2022/tcp >/dev/null 2>&1 || true
-  ufw --force delete allow 2022 >/dev/null 2>&1 || true
-  ufw --force delete allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port 2022 proto tcp >/dev/null 2>&1 || true
-  ufw --force delete deny in to any port 2022 proto tcp >/dev/null 2>&1 || true
-  ufw allow 2022/tcp comment 'SFTPGo SFTP'
+  configure_public_optional_service_port 2022 "SFTPGo SFTP"
+}
+
+configure_public_optional_service_port() {
+  local port="$1"
+  local label="$2"
+
+  ufw --force delete allow "$port/tcp" >/dev/null 2>&1 || true
+  ufw --force delete allow "$port" >/dev/null 2>&1 || true
+  ufw --force delete allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$port" proto tcp >/dev/null 2>&1 || true
+  ufw --force delete deny in to any port "$port" proto tcp >/dev/null 2>&1 || true
+  ufw allow "$port/tcp" comment "$label"
+}
+
+block_optional_service_port() {
+  local port="$1"
+  local label="$2"
+
+  ufw --force delete allow "$port/tcp" >/dev/null 2>&1 || true
+  ufw --force delete allow "$port" >/dev/null 2>&1 || true
+  ufw --force delete allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$port" proto tcp >/dev/null 2>&1 || true
+  ufw --force delete deny in to any port "$port" proto tcp >/dev/null 2>&1 || true
+  ufw deny in to any port "$port" proto tcp comment "Block disabled $label"
+}
+
+configure_managed_sftpgo_port() {
+  local access="$1"
+  local port="$2"
+  local label="$3"
+
+  case "$access" in
+    public) configure_public_optional_service_port "$port" "$label" ;;
+    private) harden_optional_service_port "$port" "$label" ;;
+    disabled) block_optional_service_port "$port" "$label" ;;
+    *)
+      printf '%sUnknown managed SFTPGo access mode %s for %s; blocking it.%s\n' "$ORANGE" "$access" "$label" "$RESET" >&2
+      block_optional_service_port "$port" "$label"
+      ;;
+  esac
+}
+
+managed_sftpgo_access() {
+  local protocol="$1"
+  local env_file="/etc/sftpgo/env.d/tater-tunnel.env"
+  local value
+
+  value="$(sed -nE "s/^# TATER_SFTPGO_${protocol}_ACCESS=(disabled|private|public)$/\\1/p" "$env_file" 2>/dev/null | tail -n 1)"
+  printf '%s' "${value:-disabled}"
 }
 
 configure_sftpgo_wireguard_webadmin() {
@@ -555,10 +748,17 @@ harden_installed_optional_services() {
   fi
 
   if command -v sftpgo >/dev/null 2>&1 || systemctl cat sftpgo.service >/dev/null 2>&1; then
-    if ufw show added 2>/dev/null | grep -Eq '^ufw allow (2022|2022/tcp)([[:space:]]|$)'; then
-      configure_public_sftpgo_port
+    if grep -q '^# TATER_SFTPGO_SFTP_ACCESS=' /etc/sftpgo/env.d/tater-tunnel.env 2>/dev/null; then
+      configure_managed_sftpgo_port "$(managed_sftpgo_access SFTP)" 2022 "SFTPGo SFTP"
+      configure_managed_sftpgo_port "$(managed_sftpgo_access FTP)" 2121 "SFTPGo FTP"
+      configure_managed_sftpgo_port "$(managed_sftpgo_access FTP)" 50000:50100 "SFTPGo FTP passive data"
+      configure_managed_sftpgo_port "$(managed_sftpgo_access WEBDAV)" 10080 "SFTPGo WebDAV"
     else
-      harden_optional_service_port 2022 SFTPGo
+      if ufw show added 2>/dev/null | grep -Eq '^ufw allow (2022|2022/tcp)([[:space:]]|$)'; then
+        configure_public_sftpgo_port
+      else
+        harden_optional_service_port 2022 "SFTPGo SFTP"
+      fi
     fi
     configure_sftpgo_wireguard_webadmin
   fi
@@ -1166,8 +1366,10 @@ service_arg() {
   local line="$1"
   local flag="$2"
   local default_value="$3"
+  local -a arguments
 
-  set -- $line
+  read -r -a arguments <<< "$line"
+  set -- "${arguments[@]}"
   while [ "$#" -gt 0 ]; do
     if [ "$1" = "$flag" ]; then
       shift
@@ -1449,7 +1651,10 @@ run_full_install() {
   local znc_makeconf="0"
   local znc_args
   local install_sftpgo="0"
-  local sftpgo_public="0"
+  local sftpgo_sftp_access="private"
+  local sftpgo_ftp_access="disabled"
+  local sftpgo_webdav_access="disabled"
+  local sftpgo_insecure_public="0"
   local sftpgo_storage_cap_gb=""
   local sftpgo_args
   local configure_cloudflare="0"
@@ -1529,11 +1734,10 @@ EOF
 
   if [ "$configure_firewall" = "1" ] && confirm "Install optional SFTPGo file server" no; then
     install_sftpgo="1"
+    select_sftpgo_protocols
+    choose_sftpgo_access
     if confirm "Set a total cap for SFTPGo's default local storage" yes; then
       sftpgo_storage_cap_gb="$(prompt_positive_integer "Maximum SFTPGo storage in GiB" "$(suggest_sftpgo_storage_gb)")"
-    fi
-    if confirm "Allow SFTPGo users to connect from the public internet on 2022/tcp" no; then
-      sftpgo_public="1"
     fi
   fi
 
@@ -1558,7 +1762,8 @@ ${BOLD}Ready to install:${RESET}
   WireGuard:   51888/udp
   Firewall:    $([ "$configure_firewall" = "1" ] && printf 'enabled' || printf 'unchanged')
   ZNC:         $([ "$install_znc" = "1" ] && printf '10.88.0.1:%s through WireGuard' "$znc_port" || printf 'not installed')
-  SFTPGo:      $([ "$install_sftpgo" = "1" ] && { [ "$sftpgo_public" = "1" ] && printf 'public SFTP on 2022/tcp' || printf 'WireGuard-only at 10.88.0.1:2022'; } || printf 'not installed')
+  SFTPGo:      $([ "$install_sftpgo" = "1" ] && printf 'selected protocols below' || printf 'not installed')
+$([ "$install_sftpgo" = "1" ] && printf '    SFTP:      %s\n    FTP:       %s\n    WebDAV:    %s\n' "$(sftpgo_access_label "$sftpgo_sftp_access" 2022)" "$(sftpgo_access_label "$sftpgo_ftp_access" 2121)" "$(sftpgo_access_label "$sftpgo_webdav_access" 10080)")
 $([ -n "$sftpgo_storage_cap_gb" ] && printf '  SFTP storage: %s GiB total cap\n' "$sftpgo_storage_cap_gb")
   Cloudflare:  $([ "$configure_cloudflare" = "1" ] && printf 'create the tunnel DNS record in %s' "$cloudflare_zone" || printf 'manual DNS setup')
 
@@ -1568,7 +1773,8 @@ HTTPS: automatic Caddy certificate
 WireGuard: UDP 51888
 Firewall: $([ "$configure_firewall" = "1" ] && printf 'managed by setup' || printf 'unchanged')
 ZNC: $([ "$install_znc" = "1" ] && printf 'IRC %s and WebAdmin %s through WireGuard' "$znc_port" "$znc_web_port" || printf 'not installed')
-SFTPGo: $([ "$install_sftpgo" = "1" ] && { [ "$sftpgo_public" = "1" ] && printf 'public SFTP; private WebAdmin' || printf 'WireGuard-only SFTP and WebAdmin'; } || printf 'not installed')"; then
+SFTPGo: $([ "$install_sftpgo" = "1" ] && printf 'SFTP %s, FTP %s, WebDAV %s' "$sftpgo_sftp_access" "$sftpgo_ftp_access" "$sftpgo_webdav_access" || printf 'not installed')
+WebAdmin: $([ "$install_sftpgo" = "1" ] && printf 'WireGuard-only at 10.88.0.1:8080' || printf 'not installed')"; then
     if [ "$CREATED_ADMIN_USER" = "1" ]; then
       print_relogin_instructions "$ADMIN_USER"
     fi
@@ -1606,9 +1812,14 @@ EOF
   fi
 
   if [ "$install_sftpgo" = "1" ]; then
-    sftpgo_args=("$SCRIPT_DIR/install-sftpgo.sh")
-    if [ "$sftpgo_public" = "1" ]; then
-      sftpgo_args+=(--public-sftp)
+    sftpgo_args=(
+      "$SCRIPT_DIR/install-sftpgo.sh"
+      --sftp-access "$sftpgo_sftp_access"
+      --ftp-access "$sftpgo_ftp_access"
+      --webdav-access "$sftpgo_webdav_access"
+    )
+    if [ "$sftpgo_insecure_public" = "1" ]; then
+      sftpgo_args+=(--allow-insecure-public-protocols)
     fi
     if [ -n "$sftpgo_storage_cap_gb" ]; then
       sftpgo_args+=(--max-storage-gb "$sftpgo_storage_cap_gb")
@@ -1617,8 +1828,9 @@ EOF
     cat <<EOF
 
 SFTPGo connection:
-  $([ "$sftpgo_public" = "1" ] && printf 'Host: your VPS public IP or your own DNS hostname' || printf 'Connect WireGuard first.\n  Host: 10.88.0.1')
-  Port: 2022
+  SFTP: $(sftpgo_access_label "$sftpgo_sftp_access" 2022)
+  FTP: $(sftpgo_access_label "$sftpgo_ftp_access" 2121)$([ "$sftpgo_ftp_access" != "disabled" ] && printf ' (passive 50000-50100)')
+  WebDAV: $(sftpgo_access_label "$sftpgo_webdav_access" 10080)
   WebAdmin: http://10.88.0.1:8080/web/admin
 
 EOF
@@ -1771,7 +1983,10 @@ Public access: blocked"; then
 }
 
 run_sftpgo_install() {
-  local public_sftp="0"
+  local sftpgo_sftp_access="private"
+  local sftpgo_ftp_access="disabled"
+  local sftpgo_webdav_access="disabled"
+  local sftpgo_insecure_public="0"
   local storage_cap_gb=""
   local args
 
@@ -1786,21 +2001,26 @@ This installs the current open-source SFTPGo release and enables its systemd
 service at boot. Running it again updates SFTPGo while preserving its existing
 configuration, users, and files.
 
-SFTP can be limited to Tater Tunnel WireGuard or opened publicly for separate
-SFTPGo users. WebAdmin is available only while connected through WireGuard.
+Choose SFTP, FTP, WebDAV, or any combination. Each listener can stay private
+behind Tater Tunnel WireGuard or be opened publicly. WebAdmin always remains
+available only while connected through WireGuard.
 
 EOF
 
+  select_sftpgo_protocols
+  choose_sftpgo_access
   if confirm "Set a total cap for SFTPGo's default local storage" yes; then
     storage_cap_gb="$(prompt_positive_integer "Maximum SFTPGo storage in GiB" "$(suggest_sftpgo_storage_gb)")"
   fi
-  if confirm "Allow SFTPGo users to connect from the public internet on 2022/tcp" no; then
-    public_sftp="1"
-  fi
 
-  args=("$SCRIPT_DIR/install-sftpgo.sh")
-  if [ "$public_sftp" = "1" ]; then
-    args+=(--public-sftp)
+  args=(
+    "$SCRIPT_DIR/install-sftpgo.sh"
+    --sftp-access "$sftpgo_sftp_access"
+    --ftp-access "$sftpgo_ftp_access"
+    --webdav-access "$sftpgo_webdav_access"
+  )
+  if [ "$sftpgo_insecure_public" = "1" ]; then
+    args+=(--allow-insecure-public-protocols)
   fi
   if [ -n "$storage_cap_gb" ]; then
     args+=(--max-storage-gb "$storage_cap_gb")
@@ -1813,16 +2033,20 @@ EOF
 ${BOLD}Ready to install or update SFTPGo:${RESET}
   Edition:     Open source (current stable release)
   Service:     enabled at boot
-  SFTP:        $([ "$public_sftp" = "1" ] && printf 'public port 2022/tcp' || printf '10.88.0.1:2022 through WireGuard only')
+  SFTP:        $(sftpgo_access_label "$sftpgo_sftp_access" 2022)
+  FTP:         $(sftpgo_access_label "$sftpgo_ftp_access" 2121)$([ "$sftpgo_ftp_access" != "disabled" ] && printf ' plus passive TCP 50000-50100')
+  WebDAV:      $(sftpgo_access_label "$sftpgo_webdav_access" 10080)
   WebAdmin:    http://10.88.0.1:8080/web/admin (WireGuard only)
-  Firewall:    $([ "$public_sftp" = "1" ] && printf 'public 2022/tcp allowed' || printf 'public 2022/tcp blocked')
+  Firewall:    matched to each selected access mode; disabled ports are blocked
   Login:       connect WireGuard, create the first admin, then enable TOTP
   Hardening:   defender enabled, strong passwords, exact version hidden
   Storage:     $([ -n "$storage_cap_gb" ] && printf '%s GiB total cap' "$storage_cap_gb" || printf 'no installer-managed total cap')
 
 EOF
 
-  if ! confirm "Install or update SFTPGo now" yes "SFTP: $([ "$public_sftp" = "1" ] && printf 'public TCP 2022' || printf 'WireGuard-only at 10.88.0.1:2022')
+  if ! confirm "Install or update SFTPGo now" yes "SFTP: $(sftpgo_access_label "$sftpgo_sftp_access" 2022)
+FTP: $(sftpgo_access_label "$sftpgo_ftp_access" 2121)
+WebDAV: $(sftpgo_access_label "$sftpgo_webdav_access" 10080)
 WebAdmin: http://10.88.0.1:8080/web/admin
 WebAdmin public access: blocked
 Storage cap: $([ -n "$storage_cap_gb" ] && printf '%s GiB' "$storage_cap_gb" || printf 'not installer-managed')"; then

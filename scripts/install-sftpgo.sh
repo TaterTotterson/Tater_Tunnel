@@ -2,10 +2,18 @@
 set -Eeuo pipefail
 
 SFTPGO_VERSION=""
-PUBLIC_SFTP="0"
+SFTP_ACCESS="private"
+FTP_ACCESS="disabled"
+WEBDAV_ACCESS="disabled"
+ALLOW_INSECURE_PUBLIC_PROTOCOLS="0"
 START_SERVICE="1"
 SFTP_PORT="2022"
+FTP_PORT="2121"
+FTP_PASSIVE_START="50000"
+FTP_PASSIVE_END="50100"
+WEBDAV_PORT="10080"
 WEB_PORT="8080"
+PUBLIC_IPV4=""
 TEMP_DIR=""
 MAX_STORAGE_GB=""
 STORAGE_DIR="/var/lib/sftpgo-storage"
@@ -27,8 +35,18 @@ Usage:
 Options:
   --version VERSION          Install a specific release, for example 2.7.6.
                              Default: current stable release
-  --public-sftp              Allow SFTP clients from the public internet on
-                             2022/tcp. Default: WireGuard-only access
+  --sftp-access MODE         SFTP access: disabled, private, or public.
+                             Default: private
+  --ftp-access MODE          FTP access: disabled, private, or public.
+                             Default: disabled
+  --webdav-access MODE       WebDAV access: disabled, private, or public.
+                             Default: disabled
+  --public-sftp              Alias for --sftp-access public.
+  --public-ip ADDRESS        Public IPv4 returned to passive FTP clients.
+                             Default: detect automatically
+  --allow-insecure-public-protocols
+                             Required with public FTP or WebDAV. Their direct
+                             listeners do not provide TLS; prefer private mode.
   --max-storage-gb SIZE      Cap total default local SFTPGo storage at SIZE GiB.
                              Creates a persistent fixed-size filesystem and
                              keeps at least 2 GiB outside the cap during setup.
@@ -44,7 +62,27 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --public-sftp)
-      PUBLIC_SFTP="1"
+      SFTP_ACCESS="public"
+      shift
+      ;;
+    --sftp-access)
+      SFTP_ACCESS="${2:?--sftp-access requires a value}"
+      shift 2
+      ;;
+    --ftp-access)
+      FTP_ACCESS="${2:?--ftp-access requires a value}"
+      shift 2
+      ;;
+    --webdav-access)
+      WEBDAV_ACCESS="${2:?--webdav-access requires a value}"
+      shift 2
+      ;;
+    --public-ip)
+      PUBLIC_IPV4="${2:?--public-ip requires a value}"
+      shift 2
+      ;;
+    --allow-insecure-public-protocols)
+      ALLOW_INSECURE_PUBLIC_PROTOCOLS="1"
       shift
       ;;
     --max-storage-gb)
@@ -114,6 +152,71 @@ validate_storage_size() {
   if ! [[ "$MAX_STORAGE_GB" =~ ^[1-9][0-9]*$ ]] || [ "$MAX_STORAGE_GB" -gt 1048576 ]; then
     echo "Invalid storage cap: $MAX_STORAGE_GB" >&2
     echo "Use a whole number from 1 to 1048576 GiB, for example --max-storage-gb 20." >&2
+    exit 2
+  fi
+}
+
+validate_access_mode() {
+  local label="$1"
+  local value="$2"
+
+  case "$value" in
+    disabled|private|public) ;;
+    *)
+      echo "Invalid $label access mode: $value" >&2
+      echo "Use disabled, private, or public." >&2
+      exit 2
+      ;;
+  esac
+}
+
+validate_protocol_access() {
+  validate_access_mode SFTP "$SFTP_ACCESS"
+  validate_access_mode FTP "$FTP_ACCESS"
+  validate_access_mode WebDAV "$WEBDAV_ACCESS"
+
+  if [ "$SFTP_ACCESS" = "disabled" ] \
+    && [ "$FTP_ACCESS" = "disabled" ] \
+    && [ "$WEBDAV_ACCESS" = "disabled" ]; then
+    echo "Enable at least one SFTPGo file protocol." >&2
+    exit 2
+  fi
+
+  if { [ "$FTP_ACCESS" = "public" ] || [ "$WEBDAV_ACCESS" = "public" ]; } \
+    && [ "$ALLOW_INSECURE_PUBLIC_PROTOCOLS" != "1" ]; then
+    cat >&2 <<'EOF'
+Public FTP and direct WebDAV are not encrypted by this installer.
+Use private mode through WireGuard, or repeat with
+--allow-insecure-public-protocols after accepting that risk.
+EOF
+    exit 2
+  fi
+}
+
+valid_ipv4() {
+  local address="$1"
+  local octet
+  local -a octets
+
+  IFS=. read -r -a octets <<< "$address"
+  [ "${#octets[@]}" -eq 4 ] || return 1
+  for octet in "${octets[@]}"; do
+    [[ "$octet" =~ ^[0-9]{1,3}$ ]] || return 1
+    [ "$octet" -le 255 ] || return 1
+  done
+}
+
+resolve_public_ipv4() {
+  if [ "$FTP_ACCESS" != "public" ]; then
+    PUBLIC_IPV4=""
+    return
+  fi
+  if [ -z "$PUBLIC_IPV4" ]; then
+    PUBLIC_IPV4="$(curl -4fsS --max-time 10 https://api.ipify.org || true)"
+  fi
+  if ! valid_ipv4 "$PUBLIC_IPV4"; then
+    echo "Could not determine a valid public IPv4 for passive FTP." >&2
+    echo "Repeat with --public-ip ADDRESS." >&2
     exit 2
   fi
 }
@@ -368,8 +471,34 @@ configure_tater_defaults() {
   fi
 
   install -d -m 0750 -o root -g "$service_group" "$env_dir"
-  cat > "$env_file" <<'EOF'
+  local sftp_port="0"
+  local ftp_port="0"
+  local webdav_port="0"
+
+  [ "$SFTP_ACCESS" != "disabled" ] && sftp_port="$SFTP_PORT"
+  [ "$FTP_ACCESS" != "disabled" ] && ftp_port="$FTP_PORT"
+  [ "$WEBDAV_ACCESS" != "disabled" ] && webdav_port="$WEBDAV_PORT"
+
+  cat > "$env_file" <<EOF
 # Managed by the Tater Tunnel SFTPGo installer.
+# TATER_SFTPGO_SFTP_ACCESS=$SFTP_ACCESS
+# TATER_SFTPGO_FTP_ACCESS=$FTP_ACCESS
+# TATER_SFTPGO_WEBDAV_ACCESS=$WEBDAV_ACCESS
+
+# Explicit protocol listeners. Port 0 disables a protocol.
+SFTPGO_SFTPD__BINDINGS__0__ADDRESS=0.0.0.0
+SFTPGO_SFTPD__BINDINGS__0__PORT=$sftp_port
+SFTPGO_FTPD__BINDINGS__0__ADDRESS=0.0.0.0
+SFTPGO_FTPD__BINDINGS__0__PORT=$ftp_port
+SFTPGO_FTPD__BINDINGS__0__TLS_MODE=0
+SFTPGO_FTPD__BINDINGS__0__FORCE_PASSIVE_IP=$PUBLIC_IPV4
+SFTPGO_FTPD__BINDINGS__0__PASSIVE_CONNECTIONS_SECURITY=0
+SFTPGO_FTPD__PASSIVE_PORT_RANGE__START=$FTP_PASSIVE_START
+SFTPGO_FTPD__PASSIVE_PORT_RANGE__END=$FTP_PASSIVE_END
+SFTPGO_FTPD__DISABLE_ACTIVE_MODE=true
+SFTPGO_WEBDAVD__BINDINGS__0__ADDRESS=0.0.0.0
+SFTPGO_WEBDAVD__BINDINGS__0__PORT=$webdav_port
+
 # Listen on the host while UFW limits WebAdmin to the Tater WireGuard interface.
 SFTPGO_HTTPD__BINDINGS__0__ADDRESS=0.0.0.0
 SFTPGO_HTTPD__BINDINGS__0__PROXY_ALLOWED=127.0.0.1/32,::1/128
@@ -390,6 +519,35 @@ EOF
   chmod 0640 "$env_file"
 }
 
+remove_tcp_rules() {
+  local port="$1"
+
+  ufw --force delete allow "$port/tcp" >/dev/null 2>&1 || true
+  ufw --force delete allow "$port" >/dev/null 2>&1 || true
+  ufw --force delete allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$port" proto tcp >/dev/null 2>&1 || true
+  ufw --force delete deny in to any port "$port" proto tcp >/dev/null 2>&1 || true
+}
+
+configure_tcp_access() {
+  local access="$1"
+  local port="$2"
+  local label="$3"
+
+  remove_tcp_rules "$port"
+  case "$access" in
+    public)
+      ufw allow "$port/tcp" comment "SFTPGo $label"
+      ;;
+    private)
+      ufw allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$port" proto tcp comment "SFTPGo $label private WireGuard"
+      ufw deny in to any port "$port" proto tcp comment "Block public SFTPGo $label"
+      ;;
+    disabled)
+      ufw deny in to any port "$port" proto tcp comment "Block disabled SFTPGo $label"
+      ;;
+  esac
+}
+
 configure_firewall() {
   if ! command -v ufw >/dev/null 2>&1; then
     echo "UFW is required to expose SFTPGo safely." >&2
@@ -400,23 +558,11 @@ configure_firewall() {
     exit 1
   fi
 
-  ufw --force delete allow "$SFTP_PORT/tcp" >/dev/null 2>&1 || true
-  ufw --force delete allow "$SFTP_PORT" >/dev/null 2>&1 || true
-  ufw --force delete allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$SFTP_PORT" proto tcp >/dev/null 2>&1 || true
-  ufw --force delete deny in to any port "$SFTP_PORT" proto tcp >/dev/null 2>&1 || true
-  if [ "$PUBLIC_SFTP" = "1" ]; then
-    ufw allow "$SFTP_PORT/tcp" comment 'SFTPGo SFTP'
-  else
-    ufw allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$SFTP_PORT" proto tcp comment 'SFTPGo private WireGuard'
-    ufw deny in to any port "$SFTP_PORT" proto tcp comment 'Block public SFTPGo'
-  fi
-
-  ufw --force delete allow "$WEB_PORT/tcp" >/dev/null 2>&1 || true
-  ufw --force delete allow "$WEB_PORT" >/dev/null 2>&1 || true
-  ufw --force delete allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$WEB_PORT" proto tcp >/dev/null 2>&1 || true
-  ufw --force delete deny in to any port "$WEB_PORT" proto tcp >/dev/null 2>&1 || true
-  ufw allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$WEB_PORT" proto tcp comment 'SFTPGo WebAdmin private WireGuard'
-  ufw deny in to any port "$WEB_PORT" proto tcp comment 'Block public SFTPGo WebAdmin'
+  configure_tcp_access "$SFTP_ACCESS" "$SFTP_PORT" SFTP
+  configure_tcp_access "$FTP_ACCESS" "$FTP_PORT" FTP
+  configure_tcp_access "$FTP_ACCESS" "$FTP_PASSIVE_START:$FTP_PASSIVE_END" 'FTP passive data'
+  configure_tcp_access "$WEBDAV_ACCESS" "$WEBDAV_PORT" WebDAV
+  configure_tcp_access private "$WEB_PORT" WebAdmin
   ufw reload >/dev/null
 }
 
@@ -443,6 +589,22 @@ print_summary() {
       storage_summary="${storage_capacity_gb} GiB maximum (storage filesystem is not mounted)"
     fi
   fi
+  local public_host="your VPS public IP or your own DNS hostname"
+  local private_host="10.88.0.1"
+  local sftp_host="$private_host"
+  local ftp_host="$private_host"
+  local webdav_host="$private_host"
+  local sftp_note=""
+  local ftp_note=""
+  local webdav_note=""
+
+  [ "$SFTP_ACCESS" = "public" ] && sftp_host="$public_host"
+  [ "$FTP_ACCESS" = "public" ] && ftp_host="$public_host"
+  [ "$WEBDAV_ACCESS" = "public" ] && webdav_host="$public_host"
+  [ "$SFTP_ACCESS" = "private" ] && sftp_note="; connect WireGuard first"
+  [ "$FTP_ACCESS" = "private" ] && ftp_note="; connect WireGuard first"
+  [ "$WEBDAV_ACCESS" = "private" ] && webdav_note="; connect WireGuard first"
+
   cat <<EOF
 
 SFTPGo install/update complete.
@@ -454,9 +616,10 @@ Service:
   sudo systemctl status sftpgo
   sudo journalctl -u sftpgo -f
 
-SFTP clients:
-  $([ "$PUBLIC_SFTP" = "1" ] && printf 'Host: your VPS public IP or your own DNS hostname' || printf 'Connect WireGuard first.\n  Host: 10.88.0.1')
-  Port: $SFTP_PORT
+File protocols:
+  SFTP:  $([ "$SFTP_ACCESS" = "disabled" ] && printf 'disabled' || printf '%s:%s (%s%s)' "$sftp_host" "$SFTP_PORT" "$SFTP_ACCESS" "$sftp_note")
+  FTP:   $([ "$FTP_ACCESS" = "disabled" ] && printf 'disabled' || printf '%s:%s, passive %s-%s (%s%s)' "$ftp_host" "$FTP_PORT" "$FTP_PASSIVE_START" "$FTP_PASSIVE_END" "$FTP_ACCESS" "$ftp_note")
+  WebDAV:$([ "$WEBDAV_ACCESS" = "disabled" ] && printf ' disabled' || printf ' http://%s:%s/ (%s%s)' "$webdav_host" "$WEBDAV_PORT" "$WEBDAV_ACCESS" "$webdav_note")
 
 First WebAdmin setup:
   Connect Tater Tunnel WireGuard, then open:
@@ -468,12 +631,12 @@ Login setup:
   - Create the first admin through the WireGuard-only WebAdmin page.
   - Use a unique strong password; the installer enforces a minimum strength.
   - Enable TOTP two-factor authentication from the admin profile after login.
-  - Create separate SFTP users and prefer SSH public keys where practical.
+  - Create separate users and prefer SFTP with SSH public keys where practical.
 
 Recommended defaults:
   - WebAdmin is reachable only through Tater Tunnel WireGuard.
   - Defender automatically blocks repeated failed login attempts.
-  - The SFTP banner hides the exact SFTPGo version.
+  - The server banner hides the exact SFTPGo version.
   - Local reverse proxies can pass the real client address safely.
   - Default local user storage is rooted under $STORAGE_MOUNT.
 
@@ -489,8 +652,16 @@ SFTPGo paths:
   User data: /srv/sftpgo/data
 
 Firewall:
-  $([ "$PUBLIC_SFTP" = "1" ] && printf 'Allowed public %s/tcp for SFTP clients.' "$SFTP_PORT" || printf 'Allowed %s/tcp only through WireGuard and blocked it publicly.' "$SFTP_PORT")
+  SFTP $SFTP_ACCESS on $SFTP_PORT/tcp.
+  FTP $FTP_ACCESS on $FTP_PORT/tcp and $FTP_PASSIVE_START:$FTP_PASSIVE_END/tcp.
+  WebDAV $WEBDAV_ACCESS on $WEBDAV_PORT/tcp.
   Allowed WebAdmin on $WEB_PORT/tcp only through WireGuard and blocked it publicly.
+
+$([ "$FTP_ACCESS" = "public" ] || [ "$WEBDAV_ACCESS" = "public" ] && cat <<'WARNING'
+WARNING: Public FTP and direct WebDAV are unencrypted. Credentials and files can
+be observed in transit. Prefer SFTP, or switch these listeners to private mode.
+WARNING
+)
 
 EOF
 }
@@ -499,8 +670,10 @@ require_root
 require_supported_system
 validate_version
 validate_storage_size
-configure_firewall
+validate_protocol_access
 install_download_tools
+resolve_public_ipv4
+configure_firewall
 install_package
 configure_storage_cap
 configure_tater_defaults

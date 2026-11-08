@@ -224,16 +224,31 @@ password.
 
 The menu can install or update SFTPGo, enable Defender, hide the exact version,
 enforce minimum password strength, and keep WebAdmin private for initial setup.
+Choose SFTP, FTP, WebDAV, or any combination. Rerunning the installer updates
+both the listeners and UFW rules to match the new selection.
 
 ```bash
 sudo ./scripts/install-sftpgo.sh \
+  --sftp-access private \
+  --ftp-access disabled \
+  --webdav-access private \
   --max-storage-gb 20
 ```
 
-This defaults to WireGuard-only SFTP at `10.88.0.1:2022`. Add `--public-sftp`,
-or choose public access in the guided menu, when separate users need to connect
-with the VPS public IP or their own DNS hostname. This is SFTP, not legacy FTP.
-WebAdmin remains WireGuard-only in either mode.
+Each protocol accepts `disabled`, `private`, or `public` access. Private access
+uses `10.88.0.1` and requires Tater Tunnel WireGuard. The managed ports are:
+
+- SFTP: `2022/tcp`
+- FTP: `2121/tcp` with passive data on `50000-50100/tcp`
+- WebDAV: `10080/tcp`
+
+SFTP is encrypted and is the recommended choice for public access. Direct FTP
+and WebDAV listeners are unencrypted, so the guided menu defaults them to
+WireGuard-only and requires a second warning confirmation before opening them
+publicly. The command-line installer similarly requires
+`--allow-insecure-public-protocols` for either public mode. Use a separate TLS
+proxy or FTPS configuration if those protocols must cross the public internet.
+WebAdmin remains WireGuard-only in every mode.
 
 The optional cap creates a sparse ext4 image at
 `/var/lib/sftpgo-storage/tater-data.img`, mounted at `/srv/sftpgo/data` with
