@@ -1,70 +1,35 @@
-# Next release
+# Tater Tunnel v0.2.12
 
-- SFTPGo setup now offers SFTP, FTP, WebDAV, or any combination, with managed
-  firewall boundaries for every listener.
-- External WebDAV uses a dedicated Caddy subdomain with automatic HTTPS while
-  its backend port remains blocked publicly.
-- The standalone SFTPGo wizard can create the WebDAV DNS-only Cloudflare record;
-  blank-VPS setup creates tunnel and WebDAV records with one token prompt.
-- FTP passive ports are configured and managed together with its control port.
-- Rerunning setup removes stale allow rules for protocols that are disabled.
-- The VPS setup console now uses a black, orange, and gray Tater theme.
-- Progress windows no longer interrupt the underlying installer and now report
-  the real command status with useful failure details.
-- Dialog accents use portable terminal yellow/amber instead of red.
-- Completed and failed actions return to the main setup menu; only Exit closes
-  the setup console during normal use.
-- New sudo accounts no longer inherit root's potentially unrelated SSH keys;
-  setup documentation now uses the standard `ssh-copy-id USER@SERVER` flow.
-- Cloudflare setup now collects API tokens in a masked dialog with normal
-  OK/Cancel controls instead of waiting for input inside the progress window.
-- The guided security audit can repair stale managed firewall and optional
-  service boundaries before verifying them.
-- The UFW audit recognizes both verbose rules and UFW's normalized
-  `deny PORT/tcp` output, avoiding false missing-deny failures.
-- SFTPGo protocol setup now applies the SFTP, FTP, and WebDAV checklist choices
-  directly, including output from `dialog` versions that quote selected tags.
-- SFTPGo setup now verifies every requested listener and waits for external
-  WebDAV HTTPS to become usable before reporting a successful installation.
-- The optional SFTPGo menu now verifies its selected protocol modes against the
-  saved SFTPGo environment after installation and shows the applied result.
-- The full-screen SFTPGo menu now proceeds directly from the optional storage
-  cap into installation; canceling the cap safely continues without one.
-- SFTPGo updates now detect and preserve an existing managed storage image
-  instead of suggesting a smaller cap that the installer must safely reject.
-- First-time ZNC setup now asks only for an administrator login and generates
-  the listeners, hashed password, private WebAdmin, service, and firewall rules
-  automatically. Existing ZNC configurations remain untouched.
-- ZNC credential entry now stays in the active setup shell, preventing a blank
-  terminal after the full-screen password confirmation.
+This release makes the VPS setup console easier to operate and turns ZNC and
+SFTPGo into guided, securely bounded optional services.
 
-# Tater Tunnel v0.2.11
+## Guided optional services
 
-This update makes VPS setup easier to follow and gives optional services
-reliable browser interfaces without exposing their administration pages.
+- SFTPGo setup now offers SFTP, FTP, WebDAV, or any combination and applies the
+  selected listeners automatically.
+- SFTP and FTP can remain WireGuard-only or be deliberately opened for public
+  clients. External WebDAV uses a dedicated Caddy hostname with automatic HTTPS.
+- Cloudflare DNS-only records can be created from a one-time masked API-token
+  prompt; the token is not saved.
+- Existing managed SFTPGo storage caps are detected and preserved during
+  updates, and setup verifies every requested listener before reporting success.
+- First-time ZNC setup now asks only for an administrator login and creates the
+  private IRC listener, private WebAdmin listener, hashed password, systemd
+  service, and firewall rules automatically.
+- Existing ZNC users and networks are preserved while managed listeners are
+  reconciled, and credential entry now moves cleanly into the review screen.
 
-## Full-screen VPS setup
+## Setup and security
 
-- The guided installer now uses the proven `dialog` ncurses interface for its
-  main menu, prompts, confirmation screens, live logs, setup notes, and final
-  pairing screen.
-- Arrow-key navigation and contextual help replace the hand-drawn menu.
-- A numbered text fallback remains available for noninteractive terminals and
-  recovery use.
-- Review screens summarize the selected network and service boundaries before
-  setup changes anything.
-
-## Private optional-service administration
-
-- SFTPGo WebAdmin is now available at
-  `http://10.88.0.1:8080/web/admin` while connected through Tater Tunnel
-  WireGuard.
-- ZNC now uses a dedicated WebAdmin listener at
-  `http://10.88.0.1:6698/`, fixing blank browser responses from its IRC
-  listener.
-- UFW explicitly allows both WebAdmin listeners only on `tater0` and blocks
-  their ports on public interfaces.
-- ZNC IRC remains on the selected listener port, separate from WebAdmin.
-- The normal update path migrates existing SFTPGo and ZNC installs to these
-  private listeners and preserves SFTPGo's public or WireGuard-only SFTP mode.
-- The VPS security audit verifies the new WireGuard-only firewall boundaries.
+- The full-screen VPS console uses a black and amber Tater theme, keeps progress
+  output visible, and returns completed or failed actions to the main menu.
+- SFTPGo and ZNC firewall rules are reconciled on every setup run, including
+  removal of stale access for protocols that have been disabled.
+- The guided security audit can repair managed firewall boundaries before
+  checking them and recognizes UFW's normalized deny-rule output.
+- Optional-service administration remains private to Tater Tunnel WireGuard,
+  while explicitly selected public file-transfer listeners keep their own exact
+  firewall boundaries.
+- SSH setup documentation now uses the standard `ssh-copy-id USER@SERVER` flow
+  and provides the commands for disabling password and root login after key
+  access has been verified.

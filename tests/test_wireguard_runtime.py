@@ -303,6 +303,17 @@ class WireGuardRuntimeTests(unittest.TestCase):
         self.assertIn("KbdInteractiveAuthentication no", readme)
         self.assertIn("PermitRootLogin no", readme)
 
+    def test_macos_release_is_always_published_as_official(self):
+        workflow = (
+            Path(__file__).parents[1] / ".github" / "workflows" / "macos-release.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('"draft": False', workflow)
+        self.assertIn('"prerelease": False', workflow)
+        self.assertIn('"make_latest": "true"', workflow)
+        self.assertIn('-X PATCH', workflow)
+        self.assertIn('"${api_url}/releases/${release_id}"', workflow)
+
     def test_znc_managed_config_hashes_password_and_owns_ports(self):
         installer = Path(__file__).parents[1] / "scripts" / "install-znc.sh"
 
