@@ -1,14 +1,15 @@
-# Tater Tunnel v0.2.2
+# Tater Tunnel v0.2.3
 
-This patch keeps the Home Agent connected when optional live WireGuard
-diagnostics are slow or unavailable.
+This patch makes device enrollment reliable on VPS hosts that take longer to
+apply WireGuard peer changes.
 
-## Connection reliability
+## Device enrollment
 
-- A successful authenticated VPS health check now remains authoritative even
-  when live peer diagnostics time out.
-- VPS diagnostic commands and the complete diagnostics request have bounded
-  deadlines, preventing a stalled OS probe from making the UI report that the
-  private tunnel is down.
-- Existing VPS pairing, WireGuard keys, devices, and private service routes are
-  preserved during the update.
+- Pairing, device approval, and device revocation now use a dedicated bounded
+  timeout sized for WireGuard configuration changes.
+- Retrying an enrollment safely replaces an incomplete peer that used the same
+  tunnel address instead of accumulating duplicates.
+- VPS health responses now report the running Tater Tunnel version, making
+  future deployment checks straightforward.
+- The guided VPS installer now continues after creating an admin user and uses
+  that account automatically for user-owned services.

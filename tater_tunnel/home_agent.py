@@ -38,6 +38,7 @@ WIREGUARD_CONFIG_PATH = PROJECT_ROOT / ".tater_tunnel" / "wireguard" / "home-age
 VALID_DEVICE_TYPES = {"Phone", "Laptop", "Tablet", "Desktop"}
 API_MAX_BODY_BYTES = 64 * 1024
 REQUEST_SOCKET_TIMEOUT_SECONDS = 30
+VPS_MUTATION_TIMEOUT_SECONDS = 30
 TUNNEL_NETWORK = ipaddress.ip_network("10.88.0.0/24")
 CF_1010_MESSAGE = (
     "Cloudflare blocked the VPS bootstrap request with error 1010. "
@@ -474,7 +475,7 @@ class HomeAgentService:
 
     def _vps_health_summary(self, payload: dict[str, Any], checked_at: str) -> dict[str, Any]:
         summary = {"status": str(payload.get("status") or "unknown"), "checkedAt": checked_at}
-        for key in ("claimed", "pairingEnabled", "peerCount"):
+        for key in ("version", "claimed", "pairingEnabled", "peerCount"):
             if key in payload:
                 summary[key] = payload[key]
         return summary
@@ -552,14 +553,31 @@ class VpsAgentClient:
         )
 
     def claim(self, base_url: str, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._request("POST", base_url, "/api/claim", payload)
+        return self._request(
+            "POST",
+            base_url,
+            "/api/claim",
+            payload,
+            timeout=VPS_MUTATION_TIMEOUT_SECONDS,
+        )
 
     def add_peer(self, base_url: str, payload: dict[str, Any], token: str) -> dict[str, Any]:
-        return self._request("POST", base_url, "/api/peers", payload, management_headers(token))
+        return self._request(
+            "POST",
+            base_url,
+            "/api/peers",
+            payload,
+            management_headers(token),
+            timeout=VPS_MUTATION_TIMEOUT_SECONDS,
+        )
 
     def remove_peer(self, base_url: str, peer_id: str, token: str) -> dict[str, Any]:
         return self._request(
-            "DELETE", base_url, f"/api/peers/{peer_id}", headers=management_headers(token)
+            "DELETE",
+            base_url,
+            f"/api/peers/{peer_id}",
+            headers=management_headers(token),
+            timeout=VPS_MUTATION_TIMEOUT_SECONDS,
         )
 
     def _request(

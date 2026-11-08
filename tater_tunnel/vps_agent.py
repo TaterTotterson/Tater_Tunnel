@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
+from . import __version__
 from .wireguard import KeyPair, WireGuardKeyProvider
 from .wireguard_runtime import WireGuardRuntimeError, build_wireguard_runtime
 
@@ -240,6 +241,7 @@ class VpsAgentService:
         state = self.store.load()
         return {
             "status": "ok",
+            "version": __version__,
             "claimed": state["claimed"],
             "pairingEnabled": state["pairing"]["enabled"],
             "peerCount": len(state["peers"]),
