@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 SFTPGO_VERSION=""
+PUBLIC_SFTP="0"
 START_SERVICE="1"
 SFTP_PORT="2022"
 WEB_PORT="8080"
@@ -26,6 +27,8 @@ Usage:
 Options:
   --version VERSION          Install a specific release, for example 2.7.6.
                              Default: current stable release
+  --public-sftp              Allow SFTP clients from the public internet on
+                             2022/tcp. Default: WireGuard-only access
   --max-storage-gb SIZE      Cap total default local SFTPGo storage at SIZE GiB.
                              Creates a persistent fixed-size filesystem and
                              keeps at least 2 GiB outside the cap during setup.
@@ -39,6 +42,10 @@ while [ "$#" -gt 0 ]; do
     --version)
       SFTPGO_VERSION="${2:?--version requires a value}"
       shift 2
+      ;;
+    --public-sftp)
+      PUBLIC_SFTP="1"
+      shift
       ;;
     --max-storage-gb)
       MAX_STORAGE_GB="${2:?--max-storage-gb requires a value}"
@@ -397,7 +404,12 @@ configure_firewall() {
   ufw --force delete allow "$SFTP_PORT" >/dev/null 2>&1 || true
   ufw --force delete allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$SFTP_PORT" proto tcp >/dev/null 2>&1 || true
   ufw --force delete deny in to any port "$SFTP_PORT" proto tcp >/dev/null 2>&1 || true
-  ufw allow "$SFTP_PORT/tcp" comment 'SFTPGo SFTP'
+  if [ "$PUBLIC_SFTP" = "1" ]; then
+    ufw allow "$SFTP_PORT/tcp" comment 'SFTPGo SFTP'
+  else
+    ufw allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$SFTP_PORT" proto tcp comment 'SFTPGo private WireGuard'
+    ufw deny in to any port "$SFTP_PORT" proto tcp comment 'Block public SFTPGo'
+  fi
   ufw reload >/dev/null
 }
 
@@ -436,7 +448,7 @@ Service:
   sudo journalctl -u sftpgo -f
 
 SFTP clients:
-  Host: your VPS public IP or your own DNS hostname
+  $([ "$PUBLIC_SFTP" = "1" ] && printf 'Host: your VPS public IP or your own DNS hostname' || printf 'Connect WireGuard first.\n  Host: 10.88.0.1')
   Port: $SFTP_PORT
 
 First WebAdmin setup from your PC:
@@ -471,7 +483,7 @@ SFTPGo paths:
   User data: /srv/sftpgo/data
 
 Firewall:
-  Allowed public $SFTP_PORT/tcp for SFTP clients.
+  $([ "$PUBLIC_SFTP" = "1" ] && printf 'Allowed public %s/tcp for SFTP clients.' "$SFTP_PORT" || printf 'Allowed %s/tcp only through WireGuard and blocked it publicly.' "$SFTP_PORT")
   Kept the web interface private; no rule was added for $WEB_PORT/tcp.
 
 EOF

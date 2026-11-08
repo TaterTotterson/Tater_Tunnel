@@ -78,6 +78,16 @@ check_public_sftpgo_port() {
   else
     pass "SFTPGo TCP 2022 has no conflicting public deny rule"
   fi
+}
+
+check_sftpgo_port() {
+  local added="$1"
+
+  if grep -Eq '^ufw allow (2022|2022/tcp)([[:space:]]|$)' <<< "$added"; then
+    check_public_sftpgo_port "$added"
+  else
+    check_private_optional_port "$added" 2022 SFTPGo
+  fi
   if grep -Eq '^ufw allow (8080|8080/tcp)([[:space:]]|$)' <<< "$added"; then
     fail "SFTPGo WebAdmin TCP 8080 is publicly allowed"
   else
@@ -310,7 +320,7 @@ if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; the
     pass "No broad device-network management rule remains"
   fi
   if command -v sftpgo >/dev/null 2>&1 || systemctl cat sftpgo.service >/dev/null 2>&1; then
-    check_public_sftpgo_port "$added"
+    check_sftpgo_port "$added"
   fi
   found_znc="0"
   while read -r port; do

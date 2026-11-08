@@ -51,8 +51,8 @@ curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/sc
 
 Choose `Install on a blank VPS` on a fresh Debian or Ubuntu VPS. The guided
 installer configures WireGuard, Caddy, UFW, automatic HTTPS, and the systemd
-service. It can also install WireGuard-only ZNC and a public SFTPGo SFTP
-listener whose WebAdmin remains private.
+service. It can also install WireGuard-only ZNC and SFTPGo with a choice of
+WireGuard-only or public SFTP access. SFTPGo WebAdmin remains private.
 
 If logged in directly as root, run the command without `sudo` first. The menu
 creates a normal sudo user and continues the full install in the same session.

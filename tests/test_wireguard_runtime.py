@@ -196,8 +196,10 @@ class WireGuardRuntimeTests(unittest.TestCase):
         self.assertNotIn("SFTP DNS-only hostname", setup)
         self.assertIn("allow in on tater0 from 10.88.0.0/24", znc)
         self.assertIn("deny in to any port", znc)
+        self.assertIn("--public-sftp", setup + sftpgo)
+        self.assertIn("Allow SFTPGo users to connect from the public internet", setup)
         self.assertIn('ufw allow "$SFTP_PORT/tcp"', sftpgo)
-        self.assertNotIn("Block public SFTPGo", sftpgo)
+        self.assertIn("Block public SFTPGo", sftpgo)
         self.assertIn("/etc/caddy/tater-sites/znc-web.caddy", setup)
 
     def test_vps_service_allows_only_agent_tcp_and_wireguard_udp(self):

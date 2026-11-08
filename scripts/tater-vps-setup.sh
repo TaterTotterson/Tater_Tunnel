@@ -431,7 +431,11 @@ harden_installed_optional_services() {
   fi
 
   if command -v sftpgo >/dev/null 2>&1 || systemctl cat sftpgo.service >/dev/null 2>&1; then
-    configure_public_sftpgo_port
+    if ufw show added 2>/dev/null | grep -Eq '^ufw allow (2022|2022/tcp)([[:space:]]|$)'; then
+      configure_public_sftpgo_port
+    else
+      harden_optional_service_port 2022 SFTPGo
+    fi
   fi
   while read -r port; do
     if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
@@ -1168,6 +1172,7 @@ run_full_install() {
   local znc_makeconf="0"
   local znc_args
   local install_sftpgo="0"
+  local sftpgo_public="0"
   local sftpgo_storage_cap_gb=""
   local sftpgo_args
   local configure_cloudflare="0"
@@ -1250,6 +1255,9 @@ EOF
     if confirm "Set a total cap for SFTPGo's default local storage" yes; then
       sftpgo_storage_cap_gb="$(prompt_positive_integer "Maximum SFTPGo storage in GiB" "$(suggest_sftpgo_storage_gb)")"
     fi
+    if confirm "Allow SFTPGo users to connect from the public internet on 2022/tcp" no; then
+      sftpgo_public="1"
+    fi
   fi
 
   if [ "$configure_firewall" != "1" ]; then
@@ -1273,7 +1281,7 @@ ${BOLD}Ready to install:${RESET}
   WireGuard:   51888/udp
   Firewall:    $([ "$configure_firewall" = "1" ] && printf 'enabled' || printf 'unchanged')
   ZNC:         $([ "$install_znc" = "1" ] && printf '10.88.0.1:%s through WireGuard' "$znc_port" || printf 'not installed')
-  SFTPGo:      $([ "$install_sftpgo" = "1" ] && printf 'public SFTP on 2022/tcp' || printf 'not installed')
+  SFTPGo:      $([ "$install_sftpgo" = "1" ] && { [ "$sftpgo_public" = "1" ] && printf 'public SFTP on 2022/tcp' || printf 'WireGuard-only at 10.88.0.1:2022'; } || printf 'not installed')
 $([ -n "$sftpgo_storage_cap_gb" ] && printf '  SFTP storage: %s GiB total cap\n' "$sftpgo_storage_cap_gb")
   Cloudflare:  $([ "$configure_cloudflare" = "1" ] && printf 'create the tunnel DNS record in %s' "$cloudflare_zone" || printf 'manual DNS setup')
 
@@ -1317,6 +1325,9 @@ EOF
 
   if [ "$install_sftpgo" = "1" ]; then
     sftpgo_args=("$SCRIPT_DIR/install-sftpgo.sh")
+    if [ "$sftpgo_public" = "1" ]; then
+      sftpgo_args+=(--public-sftp)
+    fi
     if [ -n "$sftpgo_storage_cap_gb" ]; then
       sftpgo_args+=(--max-storage-gb "$sftpgo_storage_cap_gb")
     fi
@@ -1324,7 +1335,7 @@ EOF
     cat <<EOF
 
 SFTPGo connection:
-  Host: your VPS public IP or your own DNS hostname
+  $([ "$sftpgo_public" = "1" ] && printf 'Host: your VPS public IP or your own DNS hostname' || printf 'Connect WireGuard first.\n  Host: 10.88.0.1')
   Port: 2022
 
 EOF
@@ -1486,6 +1497,7 @@ EOF
 }
 
 run_sftpgo_install() {
+  local public_sftp="0"
   local storage_cap_gb=""
   local args
 
@@ -1499,16 +1511,22 @@ This installs the current open-source SFTPGo release and enables its systemd
 service at boot. Running it again updates SFTPGo while preserving its existing
 configuration, users, and files.
 
-SFTP uses public port 2022 so separate SFTPGo users can connect without
-WireGuard. WebAdmin stays on localhost and is reached through an SSH forward.
+SFTP can be limited to Tater Tunnel WireGuard or opened publicly for separate
+SFTPGo users. WebAdmin always stays on localhost behind an SSH forward.
 
 EOF
 
   if confirm "Set a total cap for SFTPGo's default local storage" yes; then
     storage_cap_gb="$(prompt_positive_integer "Maximum SFTPGo storage in GiB" "$(suggest_sftpgo_storage_gb)")"
   fi
+  if confirm "Allow SFTPGo users to connect from the public internet on 2022/tcp" no; then
+    public_sftp="1"
+  fi
 
   args=("$SCRIPT_DIR/install-sftpgo.sh")
+  if [ "$public_sftp" = "1" ]; then
+    args+=(--public-sftp)
+  fi
   if [ -n "$storage_cap_gb" ]; then
     args+=(--max-storage-gb "$storage_cap_gb")
   fi
@@ -1520,9 +1538,9 @@ EOF
 ${BOLD}Ready to install or update SFTPGo:${RESET}
   Edition:     Open source (current stable release)
   Service:     enabled at boot
-  SFTP:        public port 2022/tcp
+  SFTP:        $([ "$public_sftp" = "1" ] && printf 'public port 2022/tcp' || printf '10.88.0.1:2022 through WireGuard only')
   WebAdmin:    http://127.0.0.1:8080/web/admin
-  Firewall:    public 2022/tcp allowed; WebAdmin remains private
+  Firewall:    $([ "$public_sftp" = "1" ] && printf 'public 2022/tcp allowed' || printf 'public 2022/tcp blocked')
   Login:       first admin through an SSH tunnel; enable TOTP after login
   Hardening:   defender enabled, strong passwords, exact version hidden
   Storage:     $([ -n "$storage_cap_gb" ] && printf '%s GiB total cap' "$storage_cap_gb" || printf 'no installer-managed total cap')

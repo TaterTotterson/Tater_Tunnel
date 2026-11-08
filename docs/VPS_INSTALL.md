@@ -229,9 +229,10 @@ sudo ./scripts/install-sftpgo.sh \
   --max-storage-gb 20
 ```
 
-This is SFTP, not legacy FTP. Configure each user's SFTP client with the VPS
-public IP or their own DNS hostname and port `2022`. The installer opens only
-the SFTP listener publicly; WebAdmin remains bound to `127.0.0.1:8080`.
+This defaults to WireGuard-only SFTP at `10.88.0.1:2022`. Add `--public-sftp`,
+or choose public access in the guided menu, when separate users need to connect
+with the VPS public IP or their own DNS hostname. This is SFTP, not legacy FTP.
+WebAdmin remains bound to `127.0.0.1:8080` in either mode.
 
 The optional cap creates a sparse ext4 image at
 `/var/lib/sftpgo-storage/tater-data.img`, mounted at `/srv/sftpgo/data` with
