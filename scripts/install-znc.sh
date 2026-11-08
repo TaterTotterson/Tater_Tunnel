@@ -5,7 +5,6 @@ ZNC_USER=""
 ZNC_PORT="6697"
 DATA_DIR=""
 RUN_MAKECONF="0"
-OPEN_FIREWALL="0"
 START_SERVICE="1"
 WEB_LISTEN_PORT=""
 
@@ -22,10 +21,9 @@ Usage:
 
 Options:
   --user USER        Linux user that should own and run ZNC.
-  --port PORT        ZNC listener port to mention/open. Default: 6697
+  --port PORT        ZNC listener port to allow through WireGuard. Default: 6697
   --data-dir PATH    ZNC data directory. Default: /home/USER/.znc
   --makeconf         Run ZNC's interactive config wizard during install.
-  --open-firewall    Open PORT/tcp in UFW for ZNC.
   --web-listen-port PORT
                      Add a web-only listener on 127.0.0.1 for a local reverse
                      proxy. The port is not opened in UFW.
@@ -50,10 +48,6 @@ while [ "$#" -gt 0 ]; do
       ;;
     --makeconf)
       RUN_MAKECONF="1"
-      shift
-      ;;
-    --open-firewall)
-      OPEN_FIREWALL="1"
       shift
       ;;
     --web-listen-port)
@@ -181,7 +175,7 @@ run_makeconf() {
   echo
   echo "Starting ZNC interactive config for $ZNC_USER."
   echo "Suggested listener port: $ZNC_PORT"
-  echo "Choose SSL for the public IRC listener and answer no if asked to launch ZNC."
+  echo "Choose SSL for the private IRC listener and answer no if asked to launch ZNC."
   echo "The installer will start ZNC through systemd after setup."
   echo
   runuser -u "$ZNC_USER" -- znc --makeconf --datadir "$DATA_DIR"
@@ -360,16 +354,22 @@ EOF
 }
 
 configure_firewall() {
-  if [ "$OPEN_FIREWALL" != "1" ]; then
-    return
-  fi
-
   if ! command -v ufw >/dev/null 2>&1; then
-    echo "UFW is not installed; skipping firewall rule for $ZNC_PORT/tcp."
-    return
+    echo "UFW is required to keep ZNC private to Tater Tunnel." >&2
+    exit 1
+  fi
+  if ! ufw status | grep -q '^Status: active'; then
+    echo "UFW must be active before ZNC can be exposed through Tater Tunnel." >&2
+    exit 1
   fi
 
-  ufw allow "$ZNC_PORT/tcp" comment 'ZNC IRC bouncer'
+  ufw --force delete allow "$ZNC_PORT/tcp" >/dev/null 2>&1 || true
+  ufw --force delete allow "$ZNC_PORT" >/dev/null 2>&1 || true
+  ufw --force delete allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$ZNC_PORT" proto tcp >/dev/null 2>&1 || true
+  ufw --force delete deny in to any port "$ZNC_PORT" proto tcp >/dev/null 2>&1 || true
+  ufw allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$ZNC_PORT" proto tcp comment 'ZNC private WireGuard'
+  ufw deny in to any port "$ZNC_PORT" proto tcp comment 'Block public ZNC'
+  ufw reload >/dev/null
 }
 
 start_service_if_ready() {
@@ -428,40 +428,30 @@ EOF
 Private WebAdmin listener:
   http://127.0.0.1:$WEB_LISTEN_PORT
 
-This port is bound to localhost and was not opened in UFW. Put an HTTPS reverse
-proxy such as Caddy in front of it instead of exposing the port directly.
-The public listener on $ZNC_PORT was limited to IRC traffic only.
-Web sessions are protected, the version is hidden, and only the local Caddy
-proxy is trusted to supply the original client address.
+This port is bound to localhost and was not opened in UFW. Reach it through an
+SSH port forward when WebAdmin is needed. The listener on $ZNC_PORT was limited
+to IRC traffic only. Web sessions are protected and the version is hidden.
 
 EOF
   fi
 
-  if [ "$OPEN_FIREWALL" = "1" ]; then
-    cat <<EOF
+  cat <<EOF
 Firewall:
-  Opened $ZNC_PORT/tcp for ZNC.
+  Allowed $ZNC_PORT/tcp only from 10.88.0.0/24 on tater0.
+  Blocked public access to $ZNC_PORT/tcp.
 
 EOF
-  else
-    cat <<EOF
-Firewall:
-  No ZNC firewall rule was added. Open $ZNC_PORT/tcp later if clients should
-  connect directly to this VPS.
-
-EOF
-  fi
 }
 
 require_root
 validate_user
 validate_port
 require_systemd
+configure_firewall
 install_packages
 prepare_data_dir
 run_makeconf
 configure_private_web_listener
 write_service
-configure_firewall
 start_service_if_ready
 print_summary

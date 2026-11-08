@@ -184,6 +184,21 @@ class WireGuardRuntimeTests(unittest.TestCase):
         self.assertIn("Existing modified source preserved", setup)
         self.assertTrue(os.access(root / "scripts" / "audit-vps-security.sh", os.X_OK))
 
+    def test_optional_services_are_wireguard_only(self):
+        root = Path(__file__).parents[1]
+        setup = (root / "scripts" / "tater-vps-setup.sh").read_text(encoding="utf-8")
+        sftpgo = (root / "scripts" / "install-sftpgo.sh").read_text(encoding="utf-8")
+        znc = (root / "scripts" / "install-znc.sh").read_text(encoding="utf-8")
+
+        self.assertNotIn("--open-sftp-firewall", setup + sftpgo)
+        self.assertNotIn("--open-firewall", setup + znc)
+        self.assertNotIn("ZNC DNS-only hostname", setup)
+        self.assertNotIn("SFTP DNS-only hostname", setup)
+        for installer in (sftpgo, znc):
+            self.assertIn("allow in on tater0 from 10.88.0.0/24", installer)
+            self.assertIn("deny in to any port", installer)
+        self.assertIn("/etc/caddy/tater-sites/znc-web.caddy", setup)
+
     def test_vps_service_allows_only_agent_tcp_and_wireguard_udp(self):
         installer = (
             Path(__file__).parents[1] / "scripts" / "install-vps-agent.sh"

@@ -207,15 +207,17 @@ Caddy exposure, and UFW routing.
 ## Optional ZNC
 
 The menu can install ZNC for the selected sudo user. Its config remains under
-that user's home directory, the service starts at boot, and WebAdmin can use a
-dedicated Caddy HTTPS hostname while the backend stays on localhost.
+that user's home directory and the service starts at boot. The installer removes
+the old public Caddy subdomain route, allows the selected ZNC port only through
+`tater0`, and explicitly blocks that port on the public interface.
 
 ```bash
 sudo ./scripts/install-znc.sh --user tater --makeconf
 ```
 
-The ZNC username and password created by its wizard remain the security gate.
-Use TLS for public IRC connections and a unique password.
+Connect WireGuard first, then use `10.88.0.1` and the selected ZNC port. The ZNC
+username and password created by its wizard remain a second security gate; use
+TLS and a unique password.
 
 ## Optional SFTPGo
 
@@ -224,9 +226,12 @@ enforce minimum password strength, and keep WebAdmin private for initial setup.
 
 ```bash
 sudo ./scripts/install-sftpgo.sh \
-  --open-sftp-firewall \
   --max-storage-gb 20
 ```
+
+This is SFTP, not legacy FTP. Connect WireGuard first, then configure the SFTP
+client with host `10.88.0.1` and port `2022`. The installer permits that port
+only from `10.88.0.0/24` on `tater0` and explicitly blocks public access.
 
 The optional cap creates a sparse ext4 image at
 `/var/lib/sftpgo-storage/tater-data.img`, mounted at `/srv/sftpgo/data` with

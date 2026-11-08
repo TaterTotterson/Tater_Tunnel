@@ -6,6 +6,7 @@ SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 STATE_DIR="/var/lib/tater-tunnel"
 CONFIG_DIR="/etc/tater-tunnel"
 CADDYFILE="/etc/caddy/Caddyfile"
+ZNC_CADDY_SNIPPET="/etc/caddy/tater-sites/znc-web.caddy"
 LISTEN_PORT="4174"
 DOMAIN=""
 FAILURES=0
@@ -41,6 +42,46 @@ done
 pass() { printf '[PASS] %s\n' "$1"; }
 warn() { printf '[WARN] %s\n' "$1"; WARNINGS=$((WARNINGS + 1)); }
 fail() { printf '[FAIL] %s\n' "$1"; FAILURES=$((FAILURES + 1)); }
+
+check_private_optional_port() {
+  local added="$1"
+  local port="$2"
+  local label="$3"
+
+  if grep -Fq "allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port ${port} proto tcp" <<< "$added"; then
+    pass "$label is allowed through WireGuard on TCP $port"
+  else
+    fail "$label is missing its WireGuard-only TCP $port allow rule"
+  fi
+  if grep -Fq "deny in to any port ${port} proto tcp" <<< "$added"; then
+    pass "$label TCP $port is denied on public interfaces"
+  else
+    fail "$label is missing its public TCP $port deny rule"
+  fi
+  if grep -Eq "^ufw allow (${port}|${port}/tcp)([[:space:]]|$)" <<< "$added"; then
+    fail "$label still has a broad public TCP $port allow rule"
+  else
+    pass "$label has no broad public TCP $port allow rule"
+  fi
+}
+
+installed_znc_ports() {
+  local config
+  local data_dir
+  local service_file
+
+  for config in /home/*/.znc/configs/znc.conf /root/.znc/configs/znc.conf; do
+    [ -f "$config" ] || continue
+    sed -nE 's/^[[:space:]]*Port[[:space:]]*=[[:space:]]*([0-9]+)[[:space:]]*$/\1/p' "$config"
+  done
+  for service_file in /etc/systemd/system/znc-*.service; do
+    [ -f "$service_file" ] || continue
+    data_dir="$(sed -nE 's|^ExecStart=.*--datadir[= ]([^ ]+).*$|\1|p' "$service_file" | head -n 1)"
+    config="${data_dir%/}/configs/znc.conf"
+    [ -f "$config" ] || continue
+    sed -nE 's/^[[:space:]]*Port[[:space:]]*=[[:space:]]*([0-9]+)[[:space:]]*$/\1/p' "$config"
+  done
+}
 
 file_mode() {
   stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null || true
@@ -218,6 +259,11 @@ if [ -f "$CADDYFILE" ] \
 else
   fail "Caddy bootstrap-only boundary is missing"
 fi
+if [ -f "$ZNC_CADDY_SNIPPET" ]; then
+  fail "Legacy public ZNC Caddy route is still installed"
+else
+  pass "No public ZNC Caddy route is installed"
+fi
 
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
   added="$(ufw show added 2>/dev/null || true)"
@@ -242,6 +288,19 @@ if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; the
     fail "UFW still has a broad device-network management rule"
   else
     pass "No broad device-network management rule remains"
+  fi
+  if command -v sftpgo >/dev/null 2>&1 || systemctl cat sftpgo.service >/dev/null 2>&1; then
+    check_private_optional_port "$added" 2022 SFTPGo
+  fi
+  found_znc="0"
+  while read -r port; do
+    if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
+      check_private_optional_port "$added" "$port" ZNC
+      found_znc="1"
+    fi
+  done < <(installed_znc_ports | sort -un)
+  if [ "$found_znc" = "0" ] && compgen -G '/etc/systemd/system/znc-*.service' >/dev/null; then
+    check_private_optional_port "$added" 6697 ZNC
   fi
 else
   fail "UFW is not active"

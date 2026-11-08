@@ -1,16 +1,17 @@
-# Tater Tunnel v0.2.6
+# Tater Tunnel v0.2.7
 
-This patch fixes device QR enrollment being left on "Generating code" even
-though the VPS had already created the device.
+This security update moves the optional ZNC and SFTPGo services fully behind
+Tater Tunnel WireGuard.
 
-## Reliable device enrollment
+## Private optional services
 
-- WireGuard peer changes now use `syncconf`, preserving the Home Agent peer's
-  live endpoint and handshake while a phone or laptop is added or revoked.
-- The enrollment response carrying the private device configuration can return
-  through the same tunnel without the VPS interrupting it.
-- The macOS app now detects a changed tunnel profile, stops the old Network
-  Extension connection, and starts it again with the updated settings.
-- Existing Mac installs receive a one-time profile revision so an already-saved
-  update cannot leave the previous live tunnel running.
-- Existing pairing, routes, and approved devices are preserved during updates.
+- SFTPGo remains available to connected devices at `10.88.0.1:2022` using
+  SFTP. Legacy FTP is not enabled.
+- ZNC is available at `10.88.0.1` on the listener port selected during setup.
+- The installer no longer asks for ZNC or SFTP subdomains or offers to open
+  their client ports publicly.
+- UFW allows each installed service only from `10.88.0.0/24` on `tater0` and
+  adds an explicit deny on public interfaces.
+- The update path removes the retired public ZNC Caddy route and replaces old
+  broad firewall rules for detected optional services.
+- The VPS security audit now checks these optional-service boundaries.

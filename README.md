@@ -51,7 +51,8 @@ curl -fsSL https://raw.githubusercontent.com/TaterTotterson/Tater_Tunnel/main/sc
 
 Choose `Install on a blank VPS` on a fresh Debian or Ubuntu VPS. The guided
 installer configures WireGuard, Caddy, UFW, automatic HTTPS, and the systemd
-service. It can also install ZNC and SFTPGo.
+service. It can also install ZNC and SFTPGo with client access limited to
+devices connected through Tater Tunnel WireGuard.
 
 If logged in directly as root, run the command without `sudo` first. The menu
 creates a normal sudo user and continues the full install in the same session.

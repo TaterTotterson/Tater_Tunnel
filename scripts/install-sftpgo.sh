@@ -2,7 +2,6 @@
 set -Eeuo pipefail
 
 SFTPGO_VERSION=""
-OPEN_SFTP_FIREWALL="0"
 START_SERVICE="1"
 SFTP_PORT="2022"
 WEB_PORT="8080"
@@ -27,7 +26,6 @@ Usage:
 Options:
   --version VERSION          Install a specific release, for example 2.7.6.
                              Default: current stable release
-  --open-sftp-firewall       Open 2022/tcp in UFW for SFTP clients.
   --max-storage-gb SIZE      Cap total default local SFTPGo storage at SIZE GiB.
                              Creates a persistent fixed-size filesystem and
                              keeps at least 2 GiB outside the cap during setup.
@@ -41,10 +39,6 @@ while [ "$#" -gt 0 ]; do
     --version)
       SFTPGO_VERSION="${2:?--version requires a value}"
       shift 2
-      ;;
-    --open-sftp-firewall)
-      OPEN_SFTP_FIREWALL="1"
-      shift
       ;;
     --max-storage-gb)
       MAX_STORAGE_GB="${2:?--max-storage-gb requires a value}"
@@ -377,7 +371,7 @@ SFTPGO_HTTPD__BINDINGS__0__SECURITY__ENABLED=true
 SFTPGO_HTTPD__BINDINGS__0__SECURITY__HTTPS_PROXY_HEADERS__0__KEY=X-Forwarded-Proto
 SFTPGO_HTTPD__BINDINGS__0__SECURITY__HTTPS_PROXY_HEADERS__0__VALUE=https
 
-# Harden public SFTP and web logins without creating or storing credentials.
+# Harden SFTP and web logins without creating or storing credentials.
 SFTPGO_COMMON__DEFENDER__ENABLED=true
 SFTPGO_COMMON__SERVER_VERSION=short
 SFTPGO_DATA_PROVIDER__USERS_BASE_DIR=/srv/sftpgo/data
@@ -390,18 +384,22 @@ EOF
 }
 
 configure_firewall() {
-  if [ "$OPEN_SFTP_FIREWALL" != "1" ]; then
-    return
-  fi
-
   if ! command -v ufw >/dev/null 2>&1; then
-    echo "UFW is not installed; no SFTPGo firewall rules were added."
-    return
+    echo "UFW is required to keep SFTPGo private to Tater Tunnel." >&2
+    exit 1
+  fi
+  if ! ufw status | grep -q '^Status: active'; then
+    echo "UFW must be active before SFTPGo can be exposed through Tater Tunnel." >&2
+    exit 1
   fi
 
-  if [ "$OPEN_SFTP_FIREWALL" = "1" ]; then
-    ufw allow "$SFTP_PORT/tcp" comment 'SFTPGo SFTP'
-  fi
+  ufw --force delete allow "$SFTP_PORT/tcp" >/dev/null 2>&1 || true
+  ufw --force delete allow "$SFTP_PORT" >/dev/null 2>&1 || true
+  ufw --force delete allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$SFTP_PORT" proto tcp >/dev/null 2>&1 || true
+  ufw --force delete deny in to any port "$SFTP_PORT" proto tcp >/dev/null 2>&1 || true
+  ufw allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$SFTP_PORT" proto tcp comment 'SFTPGo private WireGuard'
+  ufw deny in to any port "$SFTP_PORT" proto tcp comment 'Block public SFTPGo'
+  ufw reload >/dev/null
 }
 
 start_service() {
@@ -439,7 +437,8 @@ Service:
   sudo journalctl -u sftpgo -f
 
 SFTP clients:
-  Host: your VPS IP or domain
+  Connect WireGuard first.
+  Host: 10.88.0.1
   Port: $SFTP_PORT
 
 First WebAdmin setup from your PC:
@@ -458,7 +457,7 @@ Login setup:
 Recommended defaults:
   - WebAdmin is bound to 127.0.0.1:$WEB_PORT only.
   - Defender automatically blocks repeated failed login attempts.
-  - The public SFTP banner hides the exact SFTPGo version.
+  - The SFTP banner hides the exact SFTPGo version.
   - Local reverse proxies can pass the real client address safely.
   - Default local user storage is rooted under $STORAGE_MOUNT.
 
@@ -474,7 +473,8 @@ SFTPGo paths:
   User data: /srv/sftpgo/data
 
 Firewall:
-  $([ "$OPEN_SFTP_FIREWALL" = "1" ] && printf 'Allowed %s/tcp for SFTP clients.' "$SFTP_PORT" || printf 'No SFTP firewall rule was added.')
+  Allowed $SFTP_PORT/tcp only from 10.88.0.0/24 on tater0.
+  Blocked public access to $SFTP_PORT/tcp.
   Kept the web interface private; no rule was added for $WEB_PORT/tcp.
 
 EOF
@@ -484,10 +484,10 @@ require_root
 require_supported_system
 validate_version
 validate_storage_size
+configure_firewall
 install_download_tools
 install_package
 configure_storage_cap
 configure_tater_defaults
-configure_firewall
 start_service
 print_summary

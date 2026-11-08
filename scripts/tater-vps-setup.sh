@@ -351,59 +351,90 @@ guess_dns_zone() {
   awk -F. '{ if (NF >= 2) print $(NF-1) "." $NF; else print $0 }' <<< "$hostname"
 }
 
-configure_znc_web_proxy() {
-  local domain="$1"
-  local web_port="$2"
+remove_legacy_znc_web_proxy() {
   local caddyfile="/etc/caddy/Caddyfile"
-  local sites_dir="/etc/caddy/tater-sites"
-  local snippet="$sites_dir/znc-web.caddy"
-  local temp_file
-  local previous_file=""
+  local snippet="/etc/caddy/tater-sites/znc-web.caddy"
+  local backup_file
 
+  if [ ! -f "$snippet" ]; then
+    return 0
+  fi
+
+  backup_file="$snippet.tater-security-backup-$(date +%Y%m%d%H%M%S)"
+  mv "$snippet" "$backup_file"
   if ! command -v caddy >/dev/null 2>&1 || [ ! -f "$caddyfile" ]; then
-    printf '%sCaddy is not installed or /etc/caddy/Caddyfile is missing.%s\n' "$RED" "$RESET" >&2
+    printf '%sRemoved the legacy public ZNC Caddy route.%s\n' "$GREEN" "$RESET"
+    return 0
+  fi
+
+  if ! caddy validate --adapter caddyfile --config "$caddyfile" >/dev/null; then
+    mv "$backup_file" "$snippet"
+    printf '%sCould not remove the legacy ZNC route because Caddy validation failed.%s\n' "$RED" "$RESET" >&2
     return 1
   fi
 
-  install -d -m 0755 "$sites_dir"
-  if ! grep -Eq '^[[:space:]]*import[[:space:]]+tater-sites/\*\.caddy[[:space:]]*$' "$caddyfile"; then
-    printf '\nimport tater-sites/*.caddy\n' >> "$caddyfile"
+  if ! systemctl reload caddy; then
+    mv "$backup_file" "$snippet"
+    systemctl reload caddy || systemctl restart caddy
+    printf '%sCould not reload Caddy without the legacy ZNC route; it was restored.%s\n' "$RED" "$RESET" >&2
+    return 1
   fi
-
-  temp_file="$(mktemp "$sites_dir/.znc-web.XXXXXX")"
-  cat > "$temp_file" <<EOF
-$domain {
-  header {
-    Strict-Transport-Security "max-age=31536000"
-    X-Content-Type-Options "nosniff"
-    X-Frame-Options "SAMEORIGIN"
-    Referrer-Policy "same-origin"
-  }
-  reverse_proxy 127.0.0.1:$web_port
+  printf '%sRemoved the legacy public ZNC Caddy route.%s\n' "$GREEN" "$RESET"
 }
-EOF
-  caddy fmt --overwrite "$temp_file" >/dev/null
 
-  if [ -f "$snippet" ]; then
-    previous_file="$(mktemp "$sites_dir/.znc-web.previous.XXXXXX")"
-    cp -a "$snippet" "$previous_file"
+harden_optional_service_port() {
+  local port="$1"
+  local label="$2"
+
+  ufw --force delete allow "$port/tcp" >/dev/null 2>&1 || true
+  ufw --force delete allow "$port" >/dev/null 2>&1 || true
+  ufw --force delete allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$port" proto tcp >/dev/null 2>&1 || true
+  ufw --force delete deny in to any port "$port" proto tcp >/dev/null 2>&1 || true
+  ufw allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$port" proto tcp comment "$label private WireGuard"
+  ufw deny in to any port "$port" proto tcp comment "Block public $label"
+}
+
+installed_znc_ports() {
+  local config
+  local data_dir
+  local service_file
+
+  for config in /home/*/.znc/configs/znc.conf /root/.znc/configs/znc.conf; do
+    [ -f "$config" ] || continue
+    sed -nE 's/^[[:space:]]*Port[[:space:]]*=[[:space:]]*([0-9]+)[[:space:]]*$/\1/p' "$config"
+  done
+  for service_file in /etc/systemd/system/znc-*.service; do
+    [ -f "$service_file" ] || continue
+    data_dir="$(sed -nE 's|^ExecStart=.*--datadir[= ]([^ ]+).*$|\1|p' "$service_file" | head -n 1)"
+    config="${data_dir%/}/configs/znc.conf"
+    [ -f "$config" ] || continue
+    sed -nE 's/^[[:space:]]*Port[[:space:]]*=[[:space:]]*([0-9]+)[[:space:]]*$/\1/p' "$config"
+  done
+}
+
+harden_installed_optional_services() {
+  local found_znc="0"
+  local port
+
+  remove_legacy_znc_web_proxy
+  if ! command -v ufw >/dev/null 2>&1 || ! ufw status | grep -q '^Status: active'; then
+    printf '%sUFW is not active; optional-service firewall cleanup could not run.%s\n' "$ORANGE" "$RESET" >&2
+    return 0
   fi
-  install -m 0644 "$temp_file" "$snippet"
-  rm -f "$temp_file"
 
-  if ! caddy validate --config "$caddyfile" >/dev/null; then
-    if [ -n "$previous_file" ]; then
-      install -m 0644 "$previous_file" "$snippet"
-    else
-      rm -f "$snippet"
+  if command -v sftpgo >/dev/null 2>&1 || systemctl cat sftpgo.service >/dev/null 2>&1; then
+    harden_optional_service_port 2022 SFTPGo
+  fi
+  while read -r port; do
+    if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
+      harden_optional_service_port "$port" ZNC
+      found_znc="1"
     fi
-    rm -f "$previous_file"
-    printf '%sThe ZNC Caddy route did not validate; the previous route was restored.%s\n' "$RED" "$RESET" >&2
-    return 1
+  done < <(installed_znc_ports | sort -un)
+  if [ "$found_znc" = "0" ] && compgen -G '/etc/systemd/system/znc-*.service' >/dev/null; then
+    harden_optional_service_port 6697 ZNC
   fi
-
-  rm -f "$previous_file"
-  systemctl reload caddy || systemctl restart caddy
+  ufw reload >/dev/null
 }
 
 harden_existing_tater_caddy() {
@@ -1112,6 +1143,7 @@ EOF
   if [ "$wg_management_access" = "1" ]; then
     harden_existing_tater_firewall "$listen_port"
   fi
+  harden_installed_optional_services
 }
 
 run_full_install() {
@@ -1125,15 +1157,9 @@ run_full_install() {
   local install_znc="0"
   local znc_user=""
   local znc_port="6697"
-  local znc_host=""
   local znc_makeconf="0"
-  local znc_open_firewall="0"
-  local znc_web_ui="0"
-  local znc_web_port="6698"
   local znc_args
   local install_sftpgo="0"
-  local sftpgo_host=""
-  local sftpgo_open_firewall="0"
   local sftpgo_storage_cap_gb=""
   local sftpgo_args
   local configure_cloudflare="0"
@@ -1182,7 +1208,7 @@ EOF
 
   printf '\n%s  STEP 2 OF 4%s  %sOptional services%s\n\n' "$CYAN$BOLD" "$RESET" "$BOLD" "$RESET"
 
-  if confirm "Install optional ZNC IRC bouncer" no; then
+  if [ "$configure_firewall" = "1" ] && confirm "Install optional ZNC IRC bouncer" no; then
     install_znc="1"
     while true; do
       znc_user="$(prompt_value "Linux user to run ZNC" "$(default_sudo_user)" yes)"
@@ -1205,57 +1231,21 @@ EOF
     fi
     if [ "$install_znc" = "1" ]; then
       znc_port="$(prompt_port "ZNC listener port" "6697")"
-      znc_host="$(prompt_value "ZNC DNS-only hostname (blank to use VPS IP)" "" no)"
-      znc_host="${znc_host#http://}"
-      znc_host="${znc_host#https://}"
-      znc_host="${znc_host%%/*}"
-      znc_host="${znc_host%.}"
       if confirm "Run ZNC interactive config wizard during install" yes; then
         znc_makeconf="1"
-      fi
-      if [ -n "$znc_host" ] && confirm "Expose ZNC WebAdmin at https://$znc_host" yes; then
-        if [ "$znc_host" = "$domain" ]; then
-          printf '%sZNC WebAdmin needs a different hostname than the Tater Tunnel service.%s\n' "$RED" "$RESET" >&2
-        else
-          znc_web_ui="1"
-          while true; do
-            znc_web_port="$(prompt_port "Private ZNC WebAdmin listener port" "6698")"
-            if [ "$znc_web_port" != "$znc_port" ]; then
-              break
-            fi
-            printf '%sThe private WebAdmin port must differ from the public IRC port.%s\n' "$ORANGE" "$RESET" >&2
-          done
-          if [ "$znc_makeconf" != "1" ]; then
-            printf '%sWebAdmin requires an existing ZNC config; the config wizard will run during install.%s\n' "$ORANGE" "$RESET"
-            znc_makeconf="1"
-          fi
-        fi
-      fi
-      if [ "$configure_firewall" = "1" ] && confirm "Open $znc_port/tcp in UFW for ZNC clients" no; then
-        znc_open_firewall="1"
       fi
     fi
   fi
 
-  if confirm "Install optional SFTPGo file server" no; then
+  if [ "$configure_firewall" = "1" ] && confirm "Install optional SFTPGo file server" no; then
     install_sftpgo="1"
-    cat <<EOF
-
-Cloudflare's normal proxy does not carry SFTP. Use a DNS-only hostname pointed
-at this VPS, or leave this blank and connect to the VPS IP.
-
-EOF
-    sftpgo_host="$(prompt_value "SFTP DNS-only hostname (blank to use VPS IP)" "" no)"
-    sftpgo_host="${sftpgo_host#http://}"
-    sftpgo_host="${sftpgo_host#https://}"
-    sftpgo_host="${sftpgo_host%%/*}"
-    sftpgo_host="${sftpgo_host%.}"
     if confirm "Set a total cap for SFTPGo's default local storage" yes; then
       sftpgo_storage_cap_gb="$(prompt_positive_integer "Maximum SFTPGo storage in GiB" "$(suggest_sftpgo_storage_gb)")"
     fi
-    if [ "$configure_firewall" = "1" ] && confirm "Open 2022/tcp in UFW for SFTPGo clients" yes; then
-      sftpgo_open_firewall="1"
-    fi
+  fi
+
+  if [ "$configure_firewall" != "1" ]; then
+    printf '%sOptional ZNC and SFTPGo setup is skipped without managed UFW rules.%s\n' "$ORANGE" "$RESET"
   fi
 
   if confirm "Create DNS-only records with a Cloudflare API token" no; then
@@ -1274,13 +1264,10 @@ ${BOLD}Ready to install:${RESET}
   Agent:       http://127.0.0.1:$listen_port
   WireGuard:   51888/udp
   Firewall:    $([ "$configure_firewall" = "1" ] && printf 'enabled' || printf 'unchanged')
-  ZNC:         $([ "$install_znc" = "1" ] && printf 'install for %s on %s/tcp' "$znc_user" "$znc_port" || printf 'not installed')
-  SFTPGo:      $([ "$install_sftpgo" = "1" ] && printf 'install on 2022/tcp' || printf 'not installed')
-$([ "$install_znc" = "1" ] && printf '  ZNC host:    %s\n' "${znc_host:-VPS IP address}")
-$([ "$znc_web_ui" = "1" ] && printf '  ZNC WebAdmin: https://%s (private backend %s)\n' "$znc_host" "$znc_web_port")
-$([ "$install_sftpgo" = "1" ] && printf '  SFTP host:   %s\n' "${sftpgo_host:-VPS IP address}")
+  ZNC:         $([ "$install_znc" = "1" ] && printf '10.88.0.1:%s through WireGuard' "$znc_port" || printf 'not installed')
+  SFTPGo:      $([ "$install_sftpgo" = "1" ] && printf '10.88.0.1:2022 through WireGuard' || printf 'not installed')
 $([ -n "$sftpgo_storage_cap_gb" ] && printf '  SFTP storage: %s GiB total cap\n' "$sftpgo_storage_cap_gb")
-  Cloudflare:  $([ "$configure_cloudflare" = "1" ] && printf 'create DNS-only records in %s' "$cloudflare_zone" || printf 'manual DNS setup')
+  Cloudflare:  $([ "$configure_cloudflare" = "1" ] && printf 'create the tunnel DNS record in %s' "$cloudflare_zone" || printf 'manual DNS setup')
 
 EOF
   if ! confirm "Start install now" yes; then
@@ -1296,12 +1283,6 @@ EOF
       --zone "$cloudflare_zone"
       --record "$domain"
     )
-    if [ -n "$znc_host" ]; then
-      cloudflare_args+=(--record "$znc_host")
-    fi
-    if [ -n "$sftpgo_host" ]; then
-      cloudflare_args+=(--record "$sftpgo_host")
-    fi
     if [ -n "$cloudflare_ipv4" ]; then
       cloudflare_args+=(--ipv4 "$cloudflare_ipv4")
     fi
@@ -1315,48 +1296,19 @@ EOF
     if [ "$znc_makeconf" = "1" ]; then
       znc_args+=(--makeconf)
     fi
-    if [ "$znc_open_firewall" = "1" ]; then
-      znc_args+=(--open-firewall)
-    fi
-    if [ "$znc_web_ui" = "1" ]; then
-      znc_args+=(--web-listen-port "$znc_web_port")
-    fi
     show_progress_handoff "ZNC install progress will appear below." "${znc_args[@]}"
-    if [ "$znc_web_ui" = "1" ]; then
-      configure_znc_web_proxy "$znc_host" "$znc_web_port"
-      cat <<EOF
-
-ZNC WebAdmin:
-  https://$znc_host
-
-Caddy terminates HTTPS and reaches ZNC through its localhost-only web listener.
-No public WebAdmin port was opened.
-
-EOF
-    fi
-    if [ -n "$znc_host" ]; then
-      cat <<EOF
+    cat <<EOF
 
 ZNC connection:
-  Host: $znc_host
+  Connect WireGuard first.
+  Host: 10.88.0.1
   Port: $znc_port
 
 EOF
-      if [ "$configure_cloudflare" != "1" ]; then
-        cat <<EOF
-Create a DNS-only A/AAAA record for $znc_host pointing directly at this VPS.
-The normal Cloudflare proxy and Caddy do not carry the raw IRC connection.
-
-EOF
-      fi
-    fi
   fi
 
   if [ "$install_sftpgo" = "1" ]; then
     sftpgo_args=("$SCRIPT_DIR/install-sftpgo.sh")
-    if [ "$sftpgo_open_firewall" = "1" ]; then
-      sftpgo_args+=(--open-sftp-firewall)
-    fi
     if [ -n "$sftpgo_storage_cap_gb" ]; then
       sftpgo_args+=(--max-storage-gb "$sftpgo_storage_cap_gb")
     fi
@@ -1364,25 +1316,11 @@ EOF
     cat <<EOF
 
 SFTPGo connection:
-  Host: ${sftpgo_host:-your VPS IP address}
+  Connect WireGuard first.
+  Host: 10.88.0.1
   Port: 2022
 
 EOF
-    if [ -n "$sftpgo_host" ]; then
-      if [ "$configure_cloudflare" = "1" ]; then
-        cat <<EOF
-The DNS-only Cloudflare record for $sftpgo_host was configured during setup.
-
-EOF
-      else
-        cat <<EOF
-Create an A/AAAA record for $sftpgo_host pointing directly at this VPS and set
-it to DNS only (gray cloud). Caddy and the normal Cloudflare proxy handle web
-traffic, but they do not proxy the raw SFTP connection.
-
-EOF
-      fi
-    fi
   fi
 
   final_pairing_code="$(cat /var/lib/tater-tunnel/pairing-code 2>/dev/null || true)"
@@ -1470,7 +1408,6 @@ run_znc_install() {
   local target_user
   local znc_port
   local run_makeconf="0"
-  local open_firewall="0"
   local args
 
   handle_root_login_for_user_addon
@@ -1481,7 +1418,8 @@ run_znc_install() {
 
 ${BOLD}Install ZNC${RESET}
 This installs ZNC as a user-owned IRC bouncer. The config/data directory stays
-in the user's home folder, for example /home/tater/.znc.
+in the user's home folder, for example /home/tater/.znc. Clients can reach it
+only through Tater Tunnel WireGuard.
 
 EOF
 
@@ -1509,18 +1447,10 @@ EOF
   if confirm "Run ZNC interactive config wizard now" yes; then
     run_makeconf="1"
   fi
-  if confirm "Open $znc_port/tcp in UFW for ZNC clients" no; then
-    open_firewall="1"
-  fi
-
   args=("$SCRIPT_DIR/install-znc.sh" --user "$target_user" --port "$znc_port")
   if [ "$run_makeconf" = "1" ]; then
     args+=(--makeconf)
   fi
-  if [ "$open_firewall" = "1" ]; then
-    args+=(--open-firewall)
-  fi
-
   clear_screen
   print_logo
   cat <<EOF
@@ -1530,7 +1460,7 @@ ${BOLD}Ready to install ZNC:${RESET}
   Config:      ~${target_user}/.znc
   Port:        $znc_port/tcp
   Make config: $([ "$run_makeconf" = "1" ] && printf 'run now' || printf 'print command for later')
-  Firewall:    $([ "$open_firewall" = "1" ] && printf 'open %s/tcp' "$znc_port" || printf 'unchanged')
+  Access:      10.88.0.1:$znc_port through WireGuard only
 
 EOF
 
@@ -1542,13 +1472,13 @@ EOF
   fi
 
   show_progress_handoff "ZNC install progress will appear below." "${args[@]}"
+  remove_legacy_znc_web_proxy
   if [ "$CREATED_ADMIN_USER" = "1" ]; then
     print_relogin_instructions "$ADMIN_USER"
   fi
 }
 
 run_sftpgo_install() {
-  local open_sftp_firewall="1"
   local storage_cap_gb=""
   local args
 
@@ -1562,8 +1492,8 @@ This installs the current open-source SFTPGo release and enables its systemd
 service at boot. Running it again updates SFTPGo while preserving its existing
 configuration, users, and files.
 
-SFTP uses port 2022. WebAdmin uses port 8080, but keeping WebAdmin private and
-reaching it through an SSH port forward is safer for first-time setup.
+SFTP uses port 2022 through Tater Tunnel WireGuard only. WebAdmin uses port
+8080, but stays on localhost and is reached through an SSH port forward.
 
 EOF
 
@@ -1571,14 +1501,7 @@ EOF
     storage_cap_gb="$(prompt_positive_integer "Maximum SFTPGo storage in GiB" "$(suggest_sftpgo_storage_gb)")"
   fi
 
-  if ! confirm "Open SFTPGo SFTP port 2022/tcp in UFW" yes; then
-    open_sftp_firewall="0"
-  fi
-
   args=("$SCRIPT_DIR/install-sftpgo.sh")
-  if [ "$open_sftp_firewall" = "1" ]; then
-    args+=(--open-sftp-firewall)
-  fi
   if [ -n "$storage_cap_gb" ]; then
     args+=(--max-storage-gb "$storage_cap_gb")
   fi
@@ -1590,9 +1513,9 @@ EOF
 ${BOLD}Ready to install or update SFTPGo:${RESET}
   Edition:     Open source (current stable release)
   Service:     enabled at boot
-  SFTP:        port 2022/tcp
+  SFTP:        10.88.0.1:2022 through WireGuard only
   WebAdmin:    http://127.0.0.1:8080/web/admin
-  Firewall:    $([ "$open_sftp_firewall" = "1" ] && printf 'open 2022/tcp' || printf 'leave 2022/tcp unchanged')
+  Firewall:    public 2022/tcp blocked
   Login:       first admin through an SSH tunnel; enable TOTP after login
   Hardening:   defender enabled, strong passwords, exact version hidden
   Storage:     $([ -n "$storage_cap_gb" ] && printf '%s GiB total cap' "$storage_cap_gb" || printf 'no installer-managed total cap')
