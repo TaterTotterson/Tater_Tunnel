@@ -41,7 +41,7 @@ LANDING_PAGE_HTML = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Tater Tunnel</title>
+  <title>Private Host</title>
   <style>
     :root { color-scheme: dark; --bg:#11100f; --panel:#1d1915; --text:#fff5e7; --muted:#cdbca7; --orange:#ff9418; --line:#3b3127; }
     * { box-sizing:border-box; }
@@ -57,11 +57,11 @@ LANDING_PAGE_HTML = """<!doctype html>
 </head>
 <body>
   <main>
-    <img src="/assets/tater-vps-mascot.png" alt="Tater mascot connecting two ethernet cables">
+    <img src="/assets/tater-vps-mascot.png" alt="A friendly mascot holding two network cables">
     <section>
-      <b>Private endpoint</b>
-      <h1>Tater Tunnel is running.</h1>
-      <p>The public side is only used once to pair your Home Agent. Services stay behind WireGuard.</p>
+      <b>Private host</b>
+      <h1>Nothing to see here.</h1>
+      <p>This address does not provide a public service.</p>
     </section>
   </main>
 </body>
