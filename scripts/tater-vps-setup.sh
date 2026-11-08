@@ -1250,6 +1250,39 @@ prompt_value() {
   done
 }
 
+prompt_secret() {
+  local label="$1"
+  local required="${2:-yes}"
+  local value
+
+  while true; do
+    if [ "$DIALOG_ENABLED" = "1" ]; then
+      set_dialog_dimensions
+      if ! value="$(dialog --stdout --clear \
+        --backtitle "Tater Tunnel // VPS Setup Console" \
+        --title "$CURRENT_DIALOG_TITLE" \
+        --insecure \
+        --passwordbox "$label" "$DIALOG_HEIGHT" "$DIALOG_WIDTH")"; then
+        return 130
+      fi
+    else
+      printf '\n%s%s%s\n> ' "$BOLD" "$label" "$RESET" >&2
+      IFS= read -rs value
+      printf '\n' >&2
+    fi
+
+    if [ "$required" != "yes" ] || [ -n "$value" ]; then
+      printf '%s' "$value"
+      return
+    fi
+    if [ "$DIALOG_ENABLED" = "1" ]; then
+      dialog_message "Required value" "$label cannot be blank."
+    else
+      printf '%sThis value is required.%s\n' "$RED" "$RESET" >&2
+    fi
+  done
+}
+
 confirm() {
   local label="$1"
   local default="${2:-yes}"
@@ -1356,6 +1389,15 @@ $failure_details"
   printf '\n  %s[failed]%s Action stopped with exit code %s\n' "$RED$BOLD" "$RESET" "$status" >&2
   return "$status"
 }
+
+show_cloudflare_progress() (
+  local title="$1"
+  local token="$2"
+  shift 2
+
+  export CLOUDFLARE_API_TOKEN="$token"
+  show_progress_handoff "$title" "$@"
+)
 
 show_pairing_completion() {
   local domain="$1"
@@ -1697,6 +1739,7 @@ run_full_install() {
   local configure_cloudflare="0"
   local cloudflare_zone=""
   local cloudflare_ipv4=""
+  local cloudflare_api_token=""
   local cloudflare_args
   local cloudflare_summary
   local final_pairing_code
@@ -1843,7 +1886,15 @@ WebAdmin: $([ "$install_sftpgo" = "1" ] && printf 'WireGuard-only at 10.88.0.1:8
     if [ "$sftpgo_webdav_access" = "https" ]; then
       cloudflare_args+=(--record "$sftpgo_webdav_domain")
     fi
-    show_progress_handoff "Cloudflare DNS progress will appear below." "${cloudflare_args[@]}"
+    cloudflare_api_token="$(prompt_secret "Cloudflare API token
+
+Required permissions: Zone Read and DNS Edit.
+The token is used once and is not saved." yes)"
+    show_cloudflare_progress \
+      "Cloudflare DNS progress will appear below." \
+      "$cloudflare_api_token" \
+      "${cloudflare_args[@]}"
+    cloudflare_api_token=""
   fi
 
   show_progress_handoff "Package/service progress will appear below." "${args[@]}"
@@ -2049,6 +2100,7 @@ run_sftpgo_install() {
   local configure_cloudflare="0"
   local cloudflare_zone=""
   local cloudflare_ipv4=""
+  local cloudflare_api_token=""
   local cloudflare_summary="not needed"
   local cloudflare_args
   local args
@@ -2141,7 +2193,15 @@ Storage cap: $([ -n "$storage_cap_gb" ] && printf '%s GiB' "$storage_cap_gb" || 
     if [ -n "$cloudflare_ipv4" ]; then
       cloudflare_args+=(--ipv4 "$cloudflare_ipv4")
     fi
-    show_progress_handoff "Cloudflare DNS progress will appear below." "${cloudflare_args[@]}"
+    cloudflare_api_token="$(prompt_secret "Cloudflare API token
+
+Required permissions: Zone Read and DNS Edit.
+The token is used once and is not saved." yes)"
+    show_cloudflare_progress \
+      "Cloudflare DNS progress will appear below." \
+      "$cloudflare_api_token" \
+      "${cloudflare_args[@]}"
+    cloudflare_api_token=""
   fi
 
   show_progress_handoff "SFTPGo install progress will appear below." "${args[@]}"
@@ -2221,6 +2281,7 @@ Firewall: $([ "$remove_ufw_rules" = "1" ] && printf 'Tater rules removed' || pri
 
 run_security_audit() {
   local exec_start
+  local listen_host="127.0.0.1"
   local listen_port="4174"
   local state_file="/var/lib/tater-tunnel/vps-agent.json"
   local config_file="/etc/tater-tunnel/wireguard/tater0.conf"
@@ -2228,6 +2289,7 @@ run_security_audit() {
   local config_dir="/etc/tater-tunnel"
   local domain
   local args
+  local wg_management_access="0"
 
   CURRENT_DIALOG_TITLE="VPS security audit"
   clear_screen
@@ -2236,11 +2298,23 @@ run_security_audit() {
 
   if [ -f "$SERVICE_FILE" ]; then
     exec_start="$(service_value "ExecStart")"
+    listen_host="$(service_arg "$exec_start" "--host" "$listen_host")"
     listen_port="$(service_arg "$exec_start" "--port" "$listen_port")"
     state_file="$(service_arg "$exec_start" "--state-file" "$state_file")"
     config_file="$(service_arg "$exec_start" "--wireguard-config" "$config_file")"
     state_dir="$(dirname "$state_file")"
     config_dir="$(dirname "$(dirname "$config_file")")"
+  fi
+
+  if [ "$listen_host" = "0.0.0.0" ]; then
+    wg_management_access="1"
+  fi
+
+  if confirm "Repair Tater-managed security rules before auditing" yes \
+    "This reapplies the private Caddy, UFW, SFTPGo, and ZNC boundaries from the current installed settings.\nPairing, devices, service users, and stored files are preserved."; then
+    show_progress_handoff \
+      "Security repair progress will appear below." \
+      apply_update_hardening "$listen_port" "$wg_management_access"
   fi
 
   domain="$(prompt_value "Public Tater hostname (blank skips HTTPS test)" "" no)"

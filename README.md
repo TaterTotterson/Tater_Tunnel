@@ -105,7 +105,8 @@ Useful VPS details:
 - Service status: `sudo systemctl status tater-tunnel-vps`
 - Live logs: `sudo journalctl -u tater-tunnel-vps -f`
 - WireGuard peers: `sudo wg show tater0`
-- Security audit: rerun setup and choose `Run security audit`.
+- Security audit: rerun setup and choose `Run security audit`. The guided audit
+  can first repair stale Tater-managed Caddy, UFW, SFTPGo, and ZNC boundaries.
 
 Full instructions are in [VPS Install](docs/VPS_INSTALL.md).
 

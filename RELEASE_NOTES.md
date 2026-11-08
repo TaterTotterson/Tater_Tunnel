@@ -16,6 +16,10 @@
   the setup console during normal use.
 - New sudo accounts no longer inherit root's potentially unrelated SSH keys;
   setup documentation now uses the standard `ssh-copy-id USER@SERVER` flow.
+- Cloudflare setup now collects API tokens in a masked dialog with normal
+  OK/Cancel controls instead of waiting for input inside the progress window.
+- The guided security audit can repair stale managed firewall and optional
+  service boundaries before verifying them.
 
 # Tater Tunnel v0.2.11
 

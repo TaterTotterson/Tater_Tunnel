@@ -204,6 +204,13 @@ class WireGuardRuntimeTests(unittest.TestCase):
         self.assertIn("Create or update the WebDAV DNS record with a Cloudflare API token", setup)
         self.assertIn('--record "$sftpgo_webdav_domain"', setup)
         self.assertIn('cloudflare_args+=(--record "$sftpgo_webdav_domain")', setup)
+        self.assertIn("--passwordbox", setup)
+        self.assertIn("show_cloudflare_progress", setup)
+        self.assertIn('export CLOUDFLARE_API_TOKEN="$token"', setup)
+        self.assertNotIn(
+            'show_progress_handoff "Cloudflare DNS progress will appear below."',
+            setup,
+        )
         self.assertIn('SFTP "Encrypted file transfer over SSH (recommended)" off', setup)
         self.assertIn('confirm "Enable SFTP on 2022/tcp" no', setup)
         self.assertIn('if [ "$sftpgo_sftp_access" != "disabled" ]', setup)
@@ -245,6 +252,14 @@ class WireGuardRuntimeTests(unittest.TestCase):
         self.assertNotIn('"$@" 2>&1 | dialog --clear', setup)
         self.assertIn("run_menu_action run_sftpgo_install", setup)
         self.assertIn("run_menu_action run_full_install", setup)
+        self.assertIn(
+            'confirm "Repair Tater-managed security rules before auditing"',
+            setup,
+        )
+        self.assertIn(
+            'apply_update_hardening "$listen_port" "$wg_management_access"',
+            setup,
+        )
         self.assertIn("Setup console closed.", setup)
         self.assertNotIn("No changes made.", setup)
         self.assertIn('export DIALOGRC="$DIALOG_THEME_FILE"', setup)
