@@ -302,7 +302,7 @@ resolve_public_ipv4() {
 install_download_tools() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
-  apt-get install -y ca-certificates curl e2fsprogs jq libcap2-bin util-linux
+  apt-get install -y ca-certificates curl e2fsprogs iproute2 jq libcap2-bin util-linux
 }
 
 release_api_url() {
@@ -723,6 +723,68 @@ start_service() {
   systemctl restart sftpgo
 }
 
+wait_for_tcp_listener() {
+  local port="$1"
+  local label="$2"
+  local attempt
+
+  for ((attempt = 1; attempt <= 15; attempt += 1)); do
+    if ss -H -lnt "sport = :$port" 2>/dev/null | grep -q .; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "$label was enabled, but SFTPGo is not listening on TCP $port." >&2
+  systemctl status sftpgo --no-pager >&2 || true
+  journalctl -u sftpgo -n 30 --no-pager >&2 || true
+  exit 1
+}
+
+verify_requested_listeners() {
+  [ "$START_SERVICE" = "1" ] || return 0
+
+  if [ "$SFTP_ACCESS" != "disabled" ]; then
+    wait_for_tcp_listener "$SFTP_PORT" "SFTP"
+  fi
+  if [ "$FTP_ACCESS" != "disabled" ]; then
+    wait_for_tcp_listener "$FTP_PORT" "FTP"
+  fi
+  if [ "$WEBDAV_ACCESS" != "disabled" ]; then
+    wait_for_tcp_listener "$WEBDAV_PORT" "WebDAV"
+    if ! curl --silent --show-error --output /dev/null \
+      --connect-timeout 3 --max-time 5 "http://127.0.0.1:$WEBDAV_PORT/"; then
+      echo "SFTPGo is listening on TCP $WEBDAV_PORT, but its WebDAV endpoint did not respond." >&2
+      journalctl -u sftpgo -n 30 --no-pager >&2 || true
+      exit 1
+    fi
+  fi
+}
+
+verify_webdav_https() {
+  local attempt
+
+  [ "$START_SERVICE" = "1" ] || return 0
+  [ "$WEBDAV_ACCESS" = "https" ] || return 0
+
+  echo "Waiting for Caddy HTTPS at https://$WEBDAV_DOMAIN/ ..."
+  for ((attempt = 1; attempt <= 18; attempt += 1)); do
+    if curl --silent --show-error --output /dev/null \
+      --connect-timeout 5 --max-time 10 "https://$WEBDAV_DOMAIN/" 2>/dev/null; then
+      echo "WebDAV HTTPS is ready: https://$WEBDAV_DOMAIN/"
+      return 0
+    fi
+    sleep 5
+  done
+
+  echo "WebDAV is running locally, but HTTPS is not ready at https://$WEBDAV_DOMAIN/." >&2
+  echo "Confirm that the hostname is DNS-only, points to this VPS, and TCP 80/443 are open." >&2
+  curl --silent --show-error --output /dev/null \
+    --connect-timeout 5 --max-time 10 "https://$WEBDAV_DOMAIN/" >&2 || true
+  journalctl -u caddy -n 40 --no-pager >&2 || true
+  exit 1
+}
+
 print_summary() {
   local installed_version
   local storage_capacity_gb
@@ -834,4 +896,6 @@ configure_storage_cap
 configure_tater_defaults
 start_service
 configure_webdav_proxy
+verify_requested_listeners
+verify_webdav_https
 print_summary

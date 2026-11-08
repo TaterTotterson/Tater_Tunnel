@@ -22,6 +22,10 @@
   service boundaries before verifying them.
 - The UFW audit recognizes both verbose rules and UFW's normalized
   `deny PORT/tcp` output, avoiding false missing-deny failures.
+- SFTPGo protocol setup now asks about SFTP, FTP, and WebDAV on separate clear
+  screens instead of relying on a multi-select checklist.
+- SFTPGo setup now verifies every requested listener and waits for external
+  WebDAV HTTPS to become usable before reporting a successful installation.
 
 # Tater Tunnel v0.2.11
 

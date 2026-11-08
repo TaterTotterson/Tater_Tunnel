@@ -461,36 +461,22 @@ suggest_sftpgo_storage_gb() {
 }
 
 select_sftpgo_protocols() {
-  local selected=""
-  local item
-
   while true; do
     sftpgo_sftp_access="disabled"
     sftpgo_ftp_access="disabled"
     sftpgo_webdav_access="disabled"
-    if [ "$DIALOG_ENABLED" = "1" ]; then
-      set_dialog_dimensions
-      if ! selected="$(dialog --stdout --clear --separate-output \
-        --backtitle "Tater Tunnel // VPS Setup Console" \
-        --title "$CURRENT_DIALOG_TITLE" \
-        --checklist "Select every file protocol you want to run.\n\nUse Space until each enabled protocol shows [X], then press Enter. Nothing is enabled by default." \
-        "$DIALOG_HEIGHT" "$DIALOG_WIDTH" 8 \
-        SFTP "Encrypted file transfer over SSH (recommended)" off \
-        FTP "Legacy FTP with passive-mode support" off \
-        WebDAV "File access for WebDAV-compatible clients" off)"; then
-        return 130
-      fi
-      while read -r item; do
-        case "$item" in
-          SFTP) sftpgo_sftp_access="private" ;;
-          FTP) sftpgo_ftp_access="private" ;;
-          WebDAV) sftpgo_webdav_access="private" ;;
-        esac
-      done <<< "$selected"
-    else
-      confirm "Enable SFTP on 2022/tcp" no && sftpgo_sftp_access="private"
-      confirm "Enable FTP on 2121/tcp with passive ports 50000-50100" no && sftpgo_ftp_access="private"
-      confirm "Enable WebDAV on 10080/tcp" no && sftpgo_webdav_access="private"
+
+    if confirm "Enable SFTP" no \
+      "Encrypted file transfer on TCP 2022. You can keep it WireGuard-only or expose it publicly in the next step."; then
+      sftpgo_sftp_access="private"
+    fi
+    if confirm "Enable FTP" no \
+      "Legacy file transfer on TCP 2121 with passive ports 50000-50100. Prefer SFTP unless an older client requires FTP."; then
+      sftpgo_ftp_access="private"
+    fi
+    if confirm "Enable WebDAV" no \
+      "WebDAV works with Finder and other file clients. You can keep it WireGuard-only or add automatic public HTTPS in the next step."; then
+      sftpgo_webdav_access="private"
     fi
 
     if [ "$sftpgo_sftp_access" != "disabled" ] \
