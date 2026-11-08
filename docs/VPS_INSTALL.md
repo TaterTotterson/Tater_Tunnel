@@ -252,8 +252,10 @@ opening it publicly. The command-line installer similarly requires
 External WebDAV never exposes `10080/tcp` directly. Setup asks for a dedicated
 subdomain, writes a managed Caddy reverse proxy, and uses Caddy automatic HTTPS
 on `443/tcp`. Create a DNS-only `A` record for that subdomain pointing directly
-to the VPS. The guided Cloudflare option creates this record together with the
-tunnel record. WebAdmin remains WireGuard-only in every mode.
+to the VPS. During a blank-VPS install, the guided Cloudflare option creates the
+tunnel and WebDAV records in one API-token session. The standalone SFTPGo menu
+also offers to create or update the WebDAV record with the same one-time,
+zone-scoped token helper. WebAdmin remains WireGuard-only in every mode.
 
 The optional cap creates a sparse ext4 image at
 `/var/lib/sftpgo-storage/tater-data.img`, mounted at `/srv/sftpgo/data` with

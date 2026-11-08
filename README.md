@@ -74,6 +74,8 @@ Useful VPS details:
 - SFTPGo can enable SFTP on `2022/tcp`, FTP on `2121/tcp` plus passive
   `50000-50100/tcp`, and WebDAV on local port `10080/tcp`. External WebDAV is
   served through Caddy on `443/tcp`; port `10080` stays blocked publicly.
+  The guided setup can create its DNS-only Cloudflare record with the same
+  one-time API-token helper used by the main VPS install.
   WebAdmin is always WireGuard-only at `http://10.88.0.1:8080/web/admin`.
 - ZNC IRC stays behind WireGuard on its selected listener port, and its
   WebAdmin is available at `http://10.88.0.1:6698/`.

@@ -4,9 +4,16 @@
   firewall boundaries for every listener.
 - External WebDAV uses a dedicated Caddy subdomain with automatic HTTPS while
   its backend port remains blocked publicly.
+- The standalone SFTPGo wizard can create the WebDAV DNS-only Cloudflare record;
+  blank-VPS setup creates tunnel and WebDAV records with one token prompt.
 - FTP passive ports are configured and managed together with its control port.
 - Rerunning setup removes stale allow rules for protocols that are disabled.
 - The VPS setup console now uses a black, orange, and gray Tater theme.
+- Progress windows no longer interrupt the underlying installer and now report
+  the real command status with useful failure details.
+- Dialog accents use a warmer red-orange instead of terminal yellow.
+- Completed and failed actions return to the main setup menu; only Exit closes
+  the setup console during normal use.
 
 # Tater Tunnel v0.2.11
 

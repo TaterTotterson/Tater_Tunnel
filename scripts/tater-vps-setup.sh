@@ -156,45 +156,45 @@ visit_items = OFF
 use_shadow = OFF
 use_colors = ON
 
-# Tater Tunnel: black canvas, warm orange accents, soft gray text.
+# Tater Tunnel: black canvas, red-orange accents, soft gray text.
 screen_color = (WHITE,BLACK,OFF)
 shadow_color = (BLACK,BLACK,OFF)
 dialog_color = (WHITE,BLACK,OFF)
-title_color = (YELLOW,BLACK,ON)
-border_color = (YELLOW,BLACK,ON)
+title_color = (RED,BLACK,ON)
+border_color = (RED,BLACK,ON)
 border2_color = border_color
-button_active_color = (BLACK,YELLOW,ON)
+button_active_color = (BLACK,RED,ON)
 button_inactive_color = (WHITE,BLACK,OFF)
-button_key_active_color = (BLACK,YELLOW,ON)
-button_key_inactive_color = (YELLOW,BLACK,ON)
-button_label_active_color = (BLACK,YELLOW,ON)
+button_key_active_color = (BLACK,RED,ON)
+button_key_inactive_color = (RED,BLACK,ON)
+button_label_active_color = (BLACK,RED,ON)
 button_label_inactive_color = (WHITE,BLACK,OFF)
 inputbox_color = (WHITE,BLACK,OFF)
-inputbox_border_color = (YELLOW,BLACK,ON)
+inputbox_border_color = (RED,BLACK,ON)
 inputbox_border2_color = inputbox_border_color
 searchbox_color = (WHITE,BLACK,OFF)
-searchbox_title_color = (YELLOW,BLACK,ON)
-searchbox_border_color = (YELLOW,BLACK,ON)
+searchbox_title_color = (RED,BLACK,ON)
+searchbox_border_color = (RED,BLACK,ON)
 searchbox_border2_color = searchbox_border_color
-position_indicator_color = (YELLOW,BLACK,ON)
+position_indicator_color = (RED,BLACK,ON)
 menubox_color = (WHITE,BLACK,OFF)
 menubox_border_color = (WHITE,BLACK,OFF)
 menubox_border2_color = menubox_border_color
 item_color = (WHITE,BLACK,OFF)
-item_selected_color = (BLACK,YELLOW,ON)
-tag_color = (YELLOW,BLACK,ON)
-tag_selected_color = (BLACK,YELLOW,ON)
-tag_key_color = (YELLOW,BLACK,ON)
-tag_key_selected_color = (BLACK,YELLOW,ON)
-check_color = (YELLOW,BLACK,ON)
-check_selected_color = (BLACK,YELLOW,ON)
-uarrow_color = (YELLOW,BLACK,ON)
-darrow_color = (YELLOW,BLACK,ON)
+item_selected_color = (BLACK,RED,ON)
+tag_color = (RED,BLACK,ON)
+tag_selected_color = (BLACK,RED,ON)
+tag_key_color = (RED,BLACK,ON)
+tag_key_selected_color = (BLACK,RED,ON)
+check_color = (RED,BLACK,ON)
+check_selected_color = (BLACK,RED,ON)
+uarrow_color = (RED,BLACK,ON)
+darrow_color = (RED,BLACK,ON)
 itemhelp_color = (WHITE,BLACK,OFF)
-form_active_text_color = (BLACK,YELLOW,ON)
+form_active_text_color = (BLACK,RED,ON)
 form_text_color = (WHITE,BLACK,OFF)
 form_item_readonly_color = (WHITE,BLACK,OFF)
-gauge_color = (YELLOW,BLACK,ON)
+gauge_color = (RED,BLACK,ON)
 EOF
   export DIALOGRC="$DIALOG_THEME_FILE"
 }
@@ -1329,23 +1329,35 @@ print_stage() {
 show_progress_handoff() {
   local title="$1"
   local status
-  local -a pipeline_status
+  local command_pid
+  local failure_details
+  local log_file
   shift
 
   if [ "$DIALOG_ENABLED" = "1" ]; then
     set_dialog_dimensions
+    log_file="$(mktemp /tmp/tater-tunnel-progress.XXXXXX)"
+    "$@" </dev/tty >"$log_file" 2>&1 &
+    command_pid="$!"
     set +e
-    "$@" 2>&1 | dialog --clear \
+    tail --pid="$command_pid" -n +1 -f "$log_file" | dialog --clear \
       --backtitle "Tater Tunnel // VPS Setup Console" \
       --title "$title" \
       --programbox "$DIALOG_HEIGHT" "$DIALOG_WIDTH"
-    pipeline_status=("${PIPESTATUS[@]}")
+    wait "$command_pid"
+    status="$?"
     set -e
-    status="${pipeline_status[0]}"
     if [ "$status" = "0" ]; then
+      rm -f "$log_file"
       return 0
     fi
-    dialog_message "Action failed" "The action stopped with exit code $status. Review the log above, correct the issue, and run setup again."
+    failure_details="$(tail -n 12 "$log_file" 2>/dev/null || true)"
+    rm -f "$log_file"
+    dialog_message "Action failed" "The action returned exit code $status. Some earlier changes may have completed.
+
+Last output:
+
+$failure_details"
     return "$status"
   fi
 
@@ -2060,6 +2072,11 @@ run_sftpgo_install() {
   local sftpgo_insecure_public="0"
   local tunnel_domain=""
   local storage_cap_gb=""
+  local configure_cloudflare="0"
+  local cloudflare_zone=""
+  local cloudflare_ipv4=""
+  local cloudflare_summary="not needed"
+  local cloudflare_args
   local args
 
   CURRENT_DIALOG_TITLE="Install or update SFTPGo"
@@ -2082,6 +2099,16 @@ EOF
   select_sftpgo_protocols
   tunnel_domain="$(installed_tater_domain)"
   choose_sftpgo_access "$tunnel_domain"
+  if [ "$sftpgo_webdav_access" = "https" ]; then
+    cloudflare_summary="manual DNS-only A record"
+    if confirm "Create or update the WebDAV DNS record with a Cloudflare API token" no \
+      "This creates a DNS-only A record pointing $sftpgo_webdav_domain to this VPS.\nThe token is used once and is not saved. Choose No if DNS is hosted elsewhere."; then
+      configure_cloudflare="1"
+      cloudflare_zone="$(prompt_value "Cloudflare zone" "$(guess_dns_zone "$sftpgo_webdav_domain")" yes)"
+      cloudflare_ipv4="$(prompt_value "VPS public IPv4 (blank to auto-detect)" "" no)"
+      cloudflare_summary="create DNS-only $sftpgo_webdav_domain in $cloudflare_zone"
+    fi
+  fi
   if confirm "Set a total cap for SFTPGo's default local storage" yes; then
     storage_cap_gb="$(prompt_positive_integer "Maximum SFTPGo storage in GiB" "$(suggest_sftpgo_storage_gb)")"
   fi
@@ -2117,6 +2144,7 @@ ${BOLD}Ready to install or update SFTPGo:${RESET}
   Login:       connect WireGuard, create the first admin, then enable TOTP
   Hardening:   defender enabled, strong passwords, exact version hidden
   Storage:     $([ -n "$storage_cap_gb" ] && printf '%s GiB total cap' "$storage_cap_gb" || printf 'no installer-managed total cap')
+  Cloudflare:  $cloudflare_summary
 
 EOF
 
@@ -2125,8 +2153,21 @@ FTP: $(sftpgo_access_label "$sftpgo_ftp_access" 2121)
 WebDAV: $(sftpgo_access_label "$sftpgo_webdav_access" 10080 "$sftpgo_webdav_domain")
 WebAdmin: http://10.88.0.1:8080/web/admin
 WebAdmin public access: blocked
+Cloudflare DNS: $cloudflare_summary
 Storage cap: $([ -n "$storage_cap_gb" ] && printf '%s GiB' "$storage_cap_gb" || printf 'not installer-managed')"; then
     return 0
+  fi
+
+  if [ "$configure_cloudflare" = "1" ]; then
+    cloudflare_args=(
+      "$SCRIPT_DIR/configure-cloudflare-dns.sh"
+      --zone "$cloudflare_zone"
+      --record "$sftpgo_webdav_domain"
+    )
+    if [ -n "$cloudflare_ipv4" ]; then
+      cloudflare_args+=(--ipv4 "$cloudflare_ipv4")
+    fi
+    show_progress_handoff "Cloudflare DNS progress will appear below." "${cloudflare_args[@]}"
   fi
 
   show_progress_handoff "SFTPGo install progress will appear below." "${args[@]}"
@@ -2270,6 +2311,27 @@ view_notes() {
   pause
 }
 
+run_menu_action() {
+  local status
+
+  # Keep errexit active inside the action while preventing one failed action
+  # from closing the setup console itself.
+  set +e
+  (
+    set -e
+    "$@"
+  )
+  status="$?"
+  set -e
+
+  if [ "$status" != "0" ] && [ "$status" != "130" ] && [ "$DIALOG_ENABLED" != "1" ]; then
+    printf '\n%sAction stopped with exit code %s. Returning to the main menu.%s\n' \
+      "$RED$BOLD" "$status" "$RESET" >&2
+    pause
+  fi
+  return 0
+}
+
 main() {
   local selected
 
@@ -2288,36 +2350,18 @@ main() {
     selected="$?"
     set -e
     case "$selected" in
-      0)
-        run_update_install
-        exit 0
-        ;;
-      1)
-        run_full_install
-        exit 0
-        ;;
-      2)
-        run_advanced_install
-        exit 0
-        ;;
-      3)
-        run_znc_install
-        exit 0
-        ;;
-      4)
-        run_sftpgo_install
-        exit 0
-        ;;
-      5) run_security_audit ;;
-      6)
-        run_uninstall
-        exit 0
-        ;;
+      0) run_menu_action run_update_install ;;
+      1) run_menu_action run_full_install ;;
+      2) run_menu_action run_advanced_install ;;
+      3) run_menu_action run_znc_install ;;
+      4) run_menu_action run_sftpgo_install ;;
+      5) run_menu_action run_security_audit ;;
+      6) run_menu_action run_uninstall ;;
       7) view_notes ;;
       8)
         clear_screen
         print_logo
-        printf '\n%sNo changes made.%s\n' "$DIM" "$RESET"
+        printf '\n%sSetup console closed.%s\n' "$DIM" "$RESET"
         exit 0
         ;;
     esac
