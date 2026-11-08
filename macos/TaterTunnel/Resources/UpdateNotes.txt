@@ -1,1 +1,1 @@
-Fixes the macOS VPN switching off immediately because generated WireGuard configuration comments were rejected by the packet-tunnel extension. Existing pairing and routes are preserved.
+Fixes device enrollment and private tunnel requests on constrained network paths by using a safe WireGuard MTU. Existing pairing and routes are preserved.

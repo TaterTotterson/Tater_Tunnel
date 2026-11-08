@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import subprocess
 import tempfile
@@ -11,8 +12,14 @@ from unittest.mock import patch
 
 from tater_tunnel.config_store import ConfigStore
 from tater_tunnel.home_agent import AgentError, HomeAgentService
+from tater_tunnel.vps_agent import VpsAgentService, VpsConfigStore
 from tater_tunnel.wireguard import KeyPair
-from tater_tunnel.wireguard_runtime import CommandRunner, WireGuardSystemRuntime
+from tater_tunnel.wireguard_runtime import (
+    WIREGUARD_MTU,
+    CommandRunner,
+    WireGuardSystemRuntime,
+    render_home_agent_config,
+)
 
 
 PRIVATE_KEY = base64.b64encode(b"k" * 32).decode("ascii")
@@ -76,6 +83,9 @@ class WireGuardRuntimeTests(unittest.TestCase):
             def wireguard(self, base_url, token):
                 raise AgentError(HTTPStatus.BAD_GATEWAY, "VPS diagnostics timed out")
 
+            def add_peer(self, base_url, payload, token):
+                return {"status": "ok"}
+
         class HomeRuntime:
             backend = "test"
 
@@ -100,11 +110,71 @@ class WireGuardRuntimeTests(unittest.TestCase):
             service.pair_vps(
                 {"vpsAddress": "tunnel.example.com", "pairingCode": "RIGHT-CODE"}
             )
+            enrollment = service.add_device(
+                {"person": "Tater Person", "name": "Phone", "type": "Phone"}
+            )["enrollment"]
 
             state = service.check_health()["state"]
 
         self.assertEqual(state["vpsAgent"]["health"]["status"], "ok")
         self.assertIn("timed out", state["vpsAgent"]["diagnosticsWarning"])
+        self.assertIn(f"MTU = {WIREGUARD_MTU}", enrollment["wireguardConfig"])
+
+    def test_home_agent_config_uses_safe_tunnel_mtu(self):
+        config = render_home_agent_config(
+            {
+                "homeAgent": {"wireguard": {"privateKey": PRIVATE_KEY}},
+                "vpsAgent": {
+                    "wireguard": {
+                        "publicKey": VPS_PUBLIC_KEY,
+                        "homeAllowedIp": "10.88.0.2/32",
+                        "network": "10.88.0.0/24",
+                    }
+                },
+            },
+            "tunnel.example.com:51888",
+        )
+
+        self.assertIn(f"MTU = {WIREGUARD_MTU}", config)
+
+    def test_vps_peer_mutation_response_stays_below_tunnel_mtu(self):
+        class KeyProvider:
+            def generate_keypair(self):
+                return KeyPair(PRIVATE_KEY, VPS_PUBLIC_KEY, "test")
+
+        class Runtime:
+            backend = "test"
+
+            def apply(self, state):
+                return {"backend": self.backend, "lastAction": "applied"}
+
+        with tempfile.TemporaryDirectory() as directory:
+            service = VpsAgentService(
+                VpsConfigStore(Path(directory) / "vps.json", "RIGHT-CODE"),
+                key_provider=KeyProvider(),
+                wireguard_runtime=Runtime(),
+            )
+            service.claim(
+                {
+                    "pairingCode": "RIGHT-CODE",
+                    "homeAgent": {"transport": "wireguard", "publicKey": HOME_PUBLIC_KEY},
+                },
+                "203.0.113.10",
+            )
+            response = service.add_peer(
+                {
+                    "id": "phone",
+                    "name": "Phone",
+                    "publicKey": base64.b64encode(b"d" * 32).decode("ascii"),
+                    "allowedIp": "10.88.0.10/32",
+                }
+            )
+
+        self.assertEqual(
+            response,
+            {"status": "ok", "peer": {"id": "phone", "allowedIp": "10.88.0.10/32"}},
+        )
+        self.assertLess(len(json.dumps(response)), WIREGUARD_MTU)
 
     def test_bootstrap_keeps_its_managed_source_updateable(self):
         root = Path(__file__).parents[1]
@@ -157,6 +227,12 @@ class WireGuardRuntimeTests(unittest.TestCase):
             self.assertEqual(command, ["wg", "setconf", "tater0", "/dev/stdin"])
             self.assertIn(f"PrivateKey = {PRIVATE_KEY}", input_text or "")
             self.assertNotIn("Address =", input_text or "")
+            self.assertNotIn("MTU =", input_text or "")
+            self.assertIn(f"MTU = {WIREGUARD_MTU}", config_path.read_text(encoding="utf-8"))
+            self.assertIn(
+                (["ip", "link", "set", "mtu", str(WIREGUARD_MTU), "dev", "tater0"], None),
+                runner.calls,
+            )
             self.assertEqual(list(config_path.parent.glob("*.setconf.*")), [])
 
 

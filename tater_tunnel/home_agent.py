@@ -29,7 +29,11 @@ from .access_forward import (
 )
 from .config_store import ConfigStore
 from .wireguard import KeyPair, WireGuardKeyProvider
-from .wireguard_runtime import WireGuardRuntimeError, build_wireguard_client_runtime
+from .wireguard_runtime import (
+    WIREGUARD_MTU,
+    WireGuardRuntimeError,
+    build_wireguard_client_runtime,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -374,6 +378,7 @@ class HomeAgentService:
                 "[Interface]",
                 f"PrivateKey = {keypair.private_key}",
                 f"Address = {device['wireguard']['allowedIp']}",
+                f"MTU = {WIREGUARD_MTU}",
                 "",
                 "[Peer]",
                 f"PublicKey = {self._enrollment_peer_public_key(state)}",

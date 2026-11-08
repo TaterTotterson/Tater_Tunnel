@@ -53,8 +53,8 @@ targets:
         CODE_SIGN_STYLE: Manual
         ENABLE_HARDENED_RUNTIME: YES
         INFOPLIST_FILE: Resources/TaterTunnelNetworkExtension-Info.plist
-        MARKETING_VERSION: "0.2.3"
-        CURRENT_PROJECT_VERSION: "18"
+        MARKETING_VERSION: "0.2.4"
+        CURRENT_PROJECT_VERSION: "19"
         PRODUCT_BUNDLE_IDENTIFIER: com.tatertotterson.tatertunnel.network-extension
         PRODUCT_NAME: com.tatertotterson.tatertunnel.network-extension
         PROVISIONING_PROFILE_SPECIFIER: "$(TATER_TUNNEL_EXTENSION_PROFILE)"

@@ -13,6 +13,7 @@ from typing import Any
 
 
 SYSTEM_COMMAND_TIMEOUT_SECONDS = 2
+WIREGUARD_MTU = 1280
 
 
 class WireGuardRuntimeError(Exception):
@@ -247,6 +248,11 @@ class WireGuardSystemRuntime(WireGuardConfigRuntime):
             )
         )
         commands_run.append(self._run_system_command(["ip", "address", "replace", state["interface"]["address"], "dev", self.interface_name]))
+        commands_run.append(
+            self._run_system_command(
+                ["ip", "link", "set", "mtu", str(WIREGUARD_MTU), "dev", self.interface_name]
+            )
+        )
         commands_run.append(self._run_system_command(["ip", "link", "set", "up", "dev", self.interface_name]))
 
         result["lastAction"] = "applied"
@@ -369,6 +375,11 @@ class WireGuardClientSystemRuntime(WireGuardClientConfigRuntime):
             )
         )
         commands_run.append(self._run_system_command(["ip", "address", "replace", address, "dev", self.interface_name]))
+        commands_run.append(
+            self._run_system_command(
+                ["ip", "link", "set", "mtu", str(WIREGUARD_MTU), "dev", self.interface_name]
+            )
+        )
         commands_run.append(self._run_system_command(["ip", "link", "set", "up", "dev", self.interface_name]))
 
         result["lastAction"] = "applied"
@@ -474,6 +485,7 @@ def render_server_config(state: dict[str, Any]) -> str:
         "[Interface]",
         f"PrivateKey = {wireguard['privateKey']}",
         f"Address = {interface['address']}",
+        f"MTU = {WIREGUARD_MTU}",
         f"ListenPort = {state['wireguardPort']}",
     ]
 
@@ -501,6 +513,7 @@ def render_home_agent_config(state: dict[str, Any], endpoint: str) -> str:
         "[Interface]",
         f"PrivateKey = {home_wireguard['privateKey']}",
         f"Address = {vps_wireguard.get('homeAllowedIp') or '10.88.0.2/32'}",
+        f"MTU = {WIREGUARD_MTU}",
         "",
         "# peer: Tater VPS Agent",
         "[Peer]",

@@ -22,7 +22,7 @@ from urllib.parse import unquote, urlparse
 
 from . import __version__
 from .wireguard import KeyPair, WireGuardKeyProvider
-from .wireguard_runtime import WireGuardRuntimeError, build_wireguard_runtime
+from .wireguard_runtime import WIREGUARD_MTU, WireGuardRuntimeError, build_wireguard_runtime
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -255,9 +255,27 @@ class VpsAgentService:
             warnings = diagnostics.setdefault("livePeerWarnings", [])
             if warning not in warnings:
                 warnings.append(warning)
+        compact_diagnostics = {
+            key: deepcopy(diagnostics[key])
+            for key in (
+                "backend",
+                "interfaceName",
+                "livePeerSource",
+                "livePeerSnapshotAt",
+                "livePeers",
+                "livePeerWarnings",
+            )
+            if key in diagnostics
+        }
+        compact_diagnostics["mtu"] = WIREGUARD_MTU
+        runtime = state.get("runtime") or {}
         return {
-            "wireguard": diagnostics,
-            "runtime": self._public_state(state).get("runtime"),
+            "wireguard": compact_diagnostics,
+            "runtime": {
+                key: runtime[key]
+                for key in ("backend", "interfaceName", "lastAction", "lastAppliedAt", "message")
+                if key in runtime
+            },
         }
 
     def _bounded_wireguard_diagnostics(
@@ -398,7 +416,11 @@ class VpsAgentService:
         )
         state["lastCheck"] = utc_now()
         self._apply_wireguard(state)
-        return {"state": self._public_state(self.store.save(state))}
+        self.store.save(state)
+        return {
+            "status": "ok",
+            "peer": {"id": peer_id, "allowedIp": allowed_ip},
+        }
 
     @synchronized_state
     def remove_peer(self, peer_id: str) -> dict[str, Any]:
@@ -410,7 +432,8 @@ class VpsAgentService:
         state["peers"] = remaining
         state["lastCheck"] = utc_now()
         self._apply_wireguard(state)
-        return {"state": self._public_state(self.store.save(state))}
+        self.store.save(state)
+        return {"status": "ok", "removedPeerId": peer_id}
 
     @synchronized_state
     def reset(self) -> dict[str, Any]:
