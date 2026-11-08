@@ -20,6 +20,7 @@ DIALOG_HEIGHT="23"
 DIALOG_WIDTH="79"
 CURRENT_DIALOG_TITLE="Tater Tunnel VPS Setup"
 DIALOG_THEME_FILE=""
+ZNC_ADMIN_PASSWORD_RESULT=""
 
 if [ -f "$SCRIPT_DIR/install-vps-full.sh" ] && [ -f "$SCRIPT_DIR/install-vps-agent.sh" ] && [ -f "$SCRIPT_DIR/uninstall-vps.sh" ] && [ -f "$SCRIPT_DIR/install-znc.sh" ] && [ -f "$SCRIPT_DIR/install-sftpgo.sh" ] && [ -f "$SCRIPT_DIR/configure-cloudflare-dns.sh" ]; then
   IN_REPO_SOURCE="1"
@@ -394,14 +395,19 @@ znc_config_exists_for_user() {
   [ -n "$home_dir" ] && [ -f "$home_dir/.znc/configs/znc.conf" ]
 }
 
-prompt_new_password() {
+choose_znc_admin_password() {
   local label="$1"
   local first
   local second
 
+  ZNC_ADMIN_PASSWORD_RESULT=""
   while true; do
-    first="$(prompt_secret "$label (12 characters minimum)" yes)"
-    second="$(prompt_secret "Confirm $label" yes)"
+    if ! first="$(prompt_secret "$label (12 characters minimum)" yes)"; then
+      return 130
+    fi
+    if ! second="$(prompt_secret "Confirm $label" yes)"; then
+      return 130
+    fi
     if [ "${#first}" -lt 12 ]; then
       if [ "$DIALOG_ENABLED" = "1" ]; then
         dialog_message "Password too short" "Use at least 12 characters."
@@ -418,8 +424,8 @@ prompt_new_password() {
       fi
       continue
     fi
-    printf '%s' "$first"
-    return
+    ZNC_ADMIN_PASSWORD_RESULT="$first"
+    return 0
   done
 }
 
@@ -1981,7 +1987,9 @@ EOF
             printf '%sUse letters, numbers, underscores, or hyphens, starting with a letter.%s\n' "$RED" "$RESET" >&2
           fi
         done
-        znc_admin_password="$(prompt_new_password "ZNC administrator password")"
+        choose_znc_admin_password "ZNC administrator password"
+        znc_admin_password="$ZNC_ADMIN_PASSWORD_RESULT"
+        ZNC_ADMIN_PASSWORD_RESULT=""
       fi
     fi
   fi
@@ -2240,9 +2248,12 @@ EOF
         printf '%sUse letters, numbers, underscores, or hyphens, starting with a letter.%s\n' "$RED" "$RESET" >&2
       fi
     done
-    znc_admin_password="$(prompt_new_password "ZNC administrator password")"
+    choose_znc_admin_password "ZNC administrator password"
+    znc_admin_password="$ZNC_ADMIN_PASSWORD_RESULT"
+    ZNC_ADMIN_PASSWORD_RESULT=""
   fi
   args=("$SCRIPT_DIR/install-znc.sh" --user "$target_user" --port "$znc_port" --web-listen-port "$znc_web_port")
+  CURRENT_DIALOG_TITLE="Install ZNC // Review"
   clear_screen
   print_logo
   cat <<EOF

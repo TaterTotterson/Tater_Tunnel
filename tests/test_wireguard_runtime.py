@@ -347,6 +347,91 @@ create_managed_config
             self.assertIn("Admin = true", config)
             self.assertIn("Method = SHA256", config)
 
+    def test_znc_password_dialog_returns_through_normal_shell_state(self):
+        setup = Path(__file__).parents[1] / "scripts" / "tater-vps-setup.sh"
+        harness = f'''
+set -Eeuo pipefail
+source "{setup}"
+DIALOG_ENABLED=1
+prompt_secret() {{
+  case "$1" in
+    "ZNC administrator password (12 characters minimum)"|"Confirm ZNC administrator password")
+      printf '%s' 'correct-horse-tater-battery'
+      ;;
+    *) return 99 ;;
+  esac
+}}
+choose_znc_admin_password "ZNC administrator password"
+printf 'password=%s\n' "$ZNC_ADMIN_PASSWORD_RESULT"
+'''
+        completed = subprocess.run(
+            ["bash", "-c", harness],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            completed.stdout,
+            "password=correct-horse-tater-battery\n",
+        )
+
+        source = setup.read_text(encoding="utf-8")
+        self.assertNotIn('$(prompt_new_password', source)
+        self.assertIn(
+            'CURRENT_DIALOG_TITLE="Install ZNC // Review"',
+            source,
+        )
+
+    def test_znc_menu_hands_credentials_to_installer_after_review(self):
+        setup = Path(__file__).parents[1] / "scripts" / "tater-vps-setup.sh"
+
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Path(directory) / "znc-args.txt"
+            harness = f'''
+set -Eeuo pipefail
+source "{setup}"
+DIALOG_ENABLED=1
+CAPTURE="{capture}"
+handle_root_login_for_user_addon() {{ :; }}
+require_root_for_install() {{ :; }}
+clear_screen() {{ :; }}
+print_logo() {{ :; }}
+default_sudo_user() {{ id -un; }}
+prompt_value() {{
+  case "$1" in
+    "Linux user to run ZNC") id -un ;;
+    "ZNC administrator username") printf '%s' 'tateradmin' ;;
+    *) return 99 ;;
+  esac
+}}
+prompt_port() {{ printf '%s' '6697'; }}
+znc_config_exists_for_user() {{ return 1; }}
+prompt_secret() {{ printf '%s' 'correct-horse-tater-battery'; }}
+confirm() {{
+  printf 'review-title=%s\n' "$CURRENT_DIALOG_TITLE" >> "$CAPTURE"
+  return 0
+}}
+run_znc_installer() {{ printf 'arg=%s\n' "$@" >> "$CAPTURE"; }}
+remove_legacy_znc_web_proxy() {{ :; }}
+run_znc_install >/dev/null
+'''
+            completed = subprocess.run(
+                ["bash", "-c", harness],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            output = capture.read_text(encoding="utf-8")
+            self.assertIn("review-title=Install ZNC // Review\n", output)
+            self.assertIn("arg=tateradmin\n", output)
+            self.assertIn("arg=correct-horse-tater-battery\n", output)
+            self.assertIn(f"arg={setup.parent / 'install-znc.sh'}\n", output)
+            self.assertIn("arg=--web-listen-port\narg=6698\n", output)
+
     def test_sftpgo_menu_passes_selected_webdav_mode_to_installer(self):
         setup = Path(__file__).parents[1] / "scripts" / "tater-vps-setup.sh"
 

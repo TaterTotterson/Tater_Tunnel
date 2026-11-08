@@ -35,6 +35,8 @@
 - First-time ZNC setup now asks only for an administrator login and generates
   the listeners, hashed password, private WebAdmin, service, and firewall rules
   automatically. Existing ZNC configurations remain untouched.
+- ZNC credential entry now stays in the active setup shell, preventing a blank
+  terminal after the full-screen password confirmation.
 
 # Tater Tunnel v0.2.11
 
