@@ -101,7 +101,8 @@ Useful VPS details:
   one-time API-token helper used by the main VPS install.
   WebAdmin is always WireGuard-only at `http://10.88.0.1:8080/web/admin`.
 - ZNC IRC stays behind WireGuard on its selected listener port, and its
-  WebAdmin is available at `http://10.88.0.1:6698/`.
+  WebAdmin is available at `http://10.88.0.1:6698/`. First-time setup asks for
+  an administrator login and creates the private ZNC configuration automatically.
 - Service status: `sudo systemctl status tater-tunnel-vps`
 - Live logs: `sudo journalctl -u tater-tunnel-vps -f`
 - WireGuard peers: `sudo wg show tater0`

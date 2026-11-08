@@ -32,8 +32,9 @@
   cap into installation; canceling the cap safely continues without one.
 - SFTPGo updates now detect and preserve an existing managed storage image
   instead of suggesting a smaller cap that the installer must safely reject.
-- Interactive ZNC configuration now leaves the read-only progress viewer and
-  receives the terminal directly before returning to the setup console.
+- First-time ZNC setup now asks only for an administrator login and generates
+  the listeners, hashed password, private WebAdmin, service, and firewall rules
+  automatically. Existing ZNC configurations remain untouched.
 
 # Tater Tunnel v0.2.11
 

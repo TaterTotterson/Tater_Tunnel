@@ -382,6 +382,47 @@ valid_linux_username() {
   [[ "$1" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]
 }
 
+valid_znc_username() {
+  [[ "$1" =~ ^[A-Za-z][A-Za-z0-9_-]{0,31}$ ]]
+}
+
+znc_config_exists_for_user() {
+  local username="$1"
+  local home_dir
+
+  home_dir="$(getent passwd "$username" 2>/dev/null | awk -F: '{ print $6 }')"
+  [ -n "$home_dir" ] && [ -f "$home_dir/.znc/configs/znc.conf" ]
+}
+
+prompt_new_password() {
+  local label="$1"
+  local first
+  local second
+
+  while true; do
+    first="$(prompt_secret "$label (12 characters minimum)" yes)"
+    second="$(prompt_secret "Confirm $label" yes)"
+    if [ "${#first}" -lt 12 ]; then
+      if [ "$DIALOG_ENABLED" = "1" ]; then
+        dialog_message "Password too short" "Use at least 12 characters."
+      else
+        printf '%sUse at least 12 characters.%s\n' "$RED" "$RESET" >&2
+      fi
+      continue
+    fi
+    if [ "$first" != "$second" ]; then
+      if [ "$DIALOG_ENABLED" = "1" ]; then
+        dialog_message "Passwords do not match" "Enter the same password in both fields."
+      else
+        printf '%sPasswords do not match.%s\n' "$RED" "$RESET" >&2
+      fi
+      continue
+    fi
+    printf '%s' "$first"
+    return
+  done
+}
+
 prompt_sudo_username() {
   local username
 
@@ -1485,45 +1526,30 @@ $failure_details"
   return "$status"
 }
 
-show_interactive_handoff() {
-  local title="$1"
+run_znc_installer() (
+  local admin_user="$1"
+  local admin_password="$2"
+  local password_file=""
   local status
-  shift
+  local -a command_args
+  shift 2
+  command_args=("$@")
+  trap '[ -z "$password_file" ] || rm -f -- "$password_file"' EXIT
 
-  if [ "$DIALOG_ENABLED" != "1" ]; then
-    show_progress_handoff "$title" "$@"
-    return
+  if [ -n "$admin_user" ]; then
+    password_file="$(mktemp /tmp/tater-znc-password.XXXXXX)"
+    chmod 0600 "$password_file"
+    printf '%s\n' "$admin_password" > "$password_file"
+    command_args+=(--admin-user "$admin_user" --admin-password-file "$password_file")
   fi
 
-  clear_screen
-  print_logo
-  printf '| %-76s |\n' 'INTERACTIVE SETUP'
-  printf '+------------------------------------------------------------------------------+\n'
-  printf '\n%s%s%s\n\n' "$BOLD" "$title" "$RESET"
-  printf 'Complete the questions below. The setup console will return when finished.\n\n'
-
-  set +e
-  "$@" </dev/tty >/dev/tty 2>&1
-  status="$?"
-  set -e
-  if [ "$status" != "0" ]; then
-    dialog_message "Action failed" "The interactive action stopped with exit code $status."
-    return "$status"
-  fi
-
-  dialog_message "Interactive setup complete" "$title finished successfully."
-}
-
-run_znc_installer() {
-  local makeconf="$1"
-  shift
-
-  if [ "$makeconf" = "1" ]; then
-    show_interactive_handoff "ZNC configuration wizard" "$@"
+  if show_progress_handoff "ZNC install progress will appear below." "${command_args[@]}"; then
+    status="0"
   else
-    show_progress_handoff "ZNC install progress will appear below." "$@"
+    status="$?"
   fi
-}
+  return "$status"
+)
 
 show_cloudflare_progress() (
   local title="$1"
@@ -1861,7 +1887,8 @@ run_full_install() {
   local znc_user=""
   local znc_port="6697"
   local znc_web_port="6698"
-  local znc_makeconf="0"
+  local znc_admin_user=""
+  local znc_admin_password=""
   local znc_args
   local install_sftpgo="0"
   local sftpgo_sftp_access="private"
@@ -1942,8 +1969,19 @@ EOF
     fi
     if [ "$install_znc" = "1" ]; then
       znc_port="$(prompt_port "ZNC listener port" "6697")"
-      if confirm "Run ZNC interactive config wizard during install" yes; then
-        znc_makeconf="1"
+      if ! znc_config_exists_for_user "$znc_user"; then
+        while true; do
+          znc_admin_user="$(prompt_value "ZNC administrator username" "$znc_user" yes)"
+          if valid_znc_username "$znc_admin_user"; then
+            break
+          fi
+          if [ "$DIALOG_ENABLED" = "1" ]; then
+            dialog_message "Invalid ZNC username" "Use letters, numbers, underscores, or hyphens, starting with a letter."
+          else
+            printf '%sUse letters, numbers, underscores, or hyphens, starting with a letter.%s\n' "$RED" "$RESET" >&2
+          fi
+        done
+        znc_admin_password="$(prompt_new_password "ZNC administrator password")"
       fi
     fi
   fi
@@ -2000,6 +2038,7 @@ HTTPS: automatic Caddy certificate
 WireGuard: UDP 51888
 Firewall: $([ "$configure_firewall" = "1" ] && printf 'managed by setup' || printf 'unchanged')
 ZNC: $([ "$install_znc" = "1" ] && printf 'IRC %s and WebAdmin %s through WireGuard' "$znc_port" "$znc_web_port" || printf 'not installed')
+$([ "$install_znc" = "1" ] && printf 'ZNC administrator: %s\n' "${znc_admin_user:-existing configuration preserved}")
 SFTPGo: $([ "$install_sftpgo" = "1" ] && printf 'SFTP %s, FTP %s, WebDAV %s' "$sftpgo_sftp_access" "$sftpgo_ftp_access" "$sftpgo_webdav_access" || printf 'not installed')
 WebAdmin: $([ "$install_sftpgo" = "1" ] && printf 'WireGuard-only at 10.88.0.1:8080' || printf 'not installed')"; then
     if [ "$CREATED_ADMIN_USER" = "1" ]; then
@@ -2035,10 +2074,8 @@ The token is used once and is not saved." yes)"
 
   if [ "$install_znc" = "1" ]; then
     znc_args=("$SCRIPT_DIR/install-znc.sh" --user "$znc_user" --port "$znc_port" --web-listen-port "$znc_web_port")
-    if [ "$znc_makeconf" = "1" ]; then
-      znc_args+=(--makeconf)
-    fi
-    run_znc_installer "$znc_makeconf" "${znc_args[@]}"
+    run_znc_installer "$znc_admin_user" "$znc_admin_password" "${znc_args[@]}"
+    znc_admin_password=""
     cat <<EOF
 
 ZNC connection:
@@ -2152,7 +2189,8 @@ run_znc_install() {
   local target_user
   local znc_port
   local znc_web_port="6698"
-  local run_makeconf="0"
+  local znc_admin_user=""
+  local znc_admin_password=""
   local args
 
   CURRENT_DIALOG_TITLE="Install ZNC"
@@ -2190,13 +2228,21 @@ EOF
   fi
 
   znc_port="$(prompt_port "ZNC listener port" "6697")"
-  if confirm "Run ZNC interactive config wizard now" yes; then
-    run_makeconf="1"
+  if ! znc_config_exists_for_user "$target_user"; then
+    while true; do
+      znc_admin_user="$(prompt_value "ZNC administrator username" "$target_user" yes)"
+      if valid_znc_username "$znc_admin_user"; then
+        break
+      fi
+      if [ "$DIALOG_ENABLED" = "1" ]; then
+        dialog_message "Invalid ZNC username" "Use letters, numbers, underscores, or hyphens, starting with a letter."
+      else
+        printf '%sUse letters, numbers, underscores, or hyphens, starting with a letter.%s\n' "$RED" "$RESET" >&2
+      fi
+    done
+    znc_admin_password="$(prompt_new_password "ZNC administrator password")"
   fi
   args=("$SCRIPT_DIR/install-znc.sh" --user "$target_user" --port "$znc_port" --web-listen-port "$znc_web_port")
-  if [ "$run_makeconf" = "1" ]; then
-    args+=(--makeconf)
-  fi
   clear_screen
   print_logo
   cat <<EOF
@@ -2206,7 +2252,7 @@ ${BOLD}Ready to install ZNC:${RESET}
   Config:      ~${target_user}/.znc
   Port:        $znc_port/tcp
   WebAdmin:    http://10.88.0.1:$znc_web_port/
-  Make config: $([ "$run_makeconf" = "1" ] && printf 'run now' || printf 'print command for later')
+  Administrator: ${znc_admin_user:-existing configuration preserved}
   Access:      10.88.0.1:$znc_port through WireGuard only
 
 EOF
@@ -2221,7 +2267,8 @@ Public access: blocked"; then
     return 0
   fi
 
-  run_znc_installer "$run_makeconf" "${args[@]}"
+  run_znc_installer "$znc_admin_user" "$znc_admin_password" "${args[@]}"
+  znc_admin_password=""
   remove_legacy_znc_web_proxy
   if [ "$CREATED_ADMIN_USER" = "1" ]; then
     print_relogin_instructions "$ADMIN_USER"

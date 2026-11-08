@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -266,10 +268,9 @@ class WireGuardRuntimeTests(unittest.TestCase):
         self.assertIn('tail --pid="$command_pid"', setup)
         self.assertIn('wait "$command_pid"', setup)
         self.assertNotIn('"$@" 2>&1 | dialog --clear', setup)
-        self.assertIn("show_interactive_handoff", setup)
-        self.assertIn('"$@" </dev/tty >/dev/tty 2>&1', setup)
-        self.assertIn('run_znc_installer "$znc_makeconf"', setup)
-        self.assertIn('run_znc_installer "$run_makeconf"', setup)
+        self.assertNotIn("show_interactive_handoff", setup)
+        self.assertIn('run_znc_installer "$znc_admin_user" "$znc_admin_password"', setup)
+        self.assertNotIn("Run ZNC interactive config wizard", setup)
         self.assertIn("run_menu_action run_sftpgo_install", setup)
         self.assertIn("run_menu_action run_full_install", setup)
         self.assertIn(
@@ -301,6 +302,50 @@ class WireGuardRuntimeTests(unittest.TestCase):
         self.assertIn("PasswordAuthentication no", readme)
         self.assertIn("KbdInteractiveAuthentication no", readme)
         self.assertIn("PermitRootLogin no", readme)
+
+    def test_znc_managed_config_hashes_password_and_owns_ports(self):
+        installer = Path(__file__).parents[1] / "scripts" / "install-znc.sh"
+
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory) / "data"
+            password_file = Path(directory) / "password"
+            password = "correct-horse-tater-battery"
+            password_file.write_text(password + "\n", encoding="utf-8")
+            harness = f'''
+set -Eeuo pipefail
+source "{installer}"
+ZNC_USER="$(id -un)"
+DATA_DIR="{data_dir}"
+ADMIN_USER="tateradmin"
+ADMIN_PASSWORD_FILE="{password_file}"
+ZNC_PORT="6697"
+group_for_user() {{ id -gn; }}
+znc() {{ printf 'ZNC 1.10.1 - test\n'; }}
+create_managed_config
+'''
+            completed = subprocess.run(
+                ["bash", "-c", harness],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            config = (data_dir / "configs" / "znc.conf").read_text(encoding="utf-8")
+            salt = re.search(r"^\s*Salt = (.+)$", config, re.MULTILINE).group(1)
+            password_hash = re.search(
+                r"^\s*Hash = ([0-9a-f]+)$", config, re.MULTILINE
+            ).group(1)
+            expected_hash = hashlib.sha256((password + salt).encode()).hexdigest()
+
+            self.assertEqual(password_hash, expected_hash)
+            self.assertNotIn(password, config)
+            self.assertIn("<Listener tater-irc>", config)
+            self.assertIn("Port = 6697", config)
+            self.assertIn("AllowWeb = false", config)
+            self.assertIn("<User tateradmin>", config)
+            self.assertIn("Admin = true", config)
+            self.assertIn("Method = SHA256", config)
 
     def test_sftpgo_menu_passes_selected_webdav_mode_to_installer(self):
         setup = Path(__file__).parents[1] / "scripts" / "tater-vps-setup.sh"

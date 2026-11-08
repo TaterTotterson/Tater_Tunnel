@@ -8,6 +8,8 @@ RUN_MAKECONF="0"
 START_SERVICE="1"
 WEB_LISTEN_PORT="6698"
 SKIP_PACKAGES="0"
+ADMIN_USER=""
+ADMIN_PASSWORD_FILE=""
 
 usage() {
   cat <<'EOF'
@@ -25,6 +27,11 @@ Options:
   --port PORT        ZNC listener port to allow through WireGuard. Default: 6697
   --data-dir PATH    ZNC data directory. Default: /home/USER/.znc
   --makeconf         Run ZNC's interactive config wizard during install.
+  --admin-user USER  Create the first managed ZNC administrator when no config
+                     exists. Requires --admin-password-file.
+  --admin-password-file PATH
+                     Read the initial administrator password from PATH. The
+                     password is hashed and is never stored in znc.conf.
   --web-listen-port PORT
                      Private WireGuard-only WebAdmin port. Default: 6698
   --skip-packages    Do not run apt; use the currently installed ZNC package.
@@ -50,6 +57,14 @@ while [ "$#" -gt 0 ]; do
     --makeconf)
       RUN_MAKECONF="1"
       shift
+      ;;
+    --admin-user)
+      ADMIN_USER="${2:?--admin-user requires a value}"
+      shift 2
+      ;;
+    --admin-password-file)
+      ADMIN_PASSWORD_FILE="${2:?--admin-password-file requires a value}"
+      shift 2
       ;;
     --web-listen-port)
       WEB_LISTEN_PORT="${2:?--web-listen-port requires a value}"
@@ -126,6 +141,24 @@ validate_port() {
   fi
 }
 
+validate_managed_admin() {
+  if [ -z "$ADMIN_USER" ] && [ -z "$ADMIN_PASSWORD_FILE" ]; then
+    return
+  fi
+  if [ -z "$ADMIN_USER" ] || [ -z "$ADMIN_PASSWORD_FILE" ]; then
+    echo "--admin-user and --admin-password-file must be used together." >&2
+    exit 2
+  fi
+  if ! [[ "$ADMIN_USER" =~ ^[A-Za-z][A-Za-z0-9_-]{0,31}$ ]]; then
+    echo "Use a ZNC administrator name containing letters, numbers, underscores, or hyphens." >&2
+    exit 2
+  fi
+  if [ ! -f "$ADMIN_PASSWORD_FILE" ] || [ ! -r "$ADMIN_PASSWORD_FILE" ]; then
+    echo "Cannot read the ZNC administrator password file." >&2
+    exit 2
+  fi
+}
+
 require_systemd() {
   if ! command -v systemctl >/dev/null 2>&1; then
     echo "systemd is required for this installer." >&2
@@ -191,6 +224,73 @@ run_makeconf() {
   echo "The installer will start ZNC through systemd after setup."
   echo
   runuser -u "$ZNC_USER" -- znc --makeconf --datadir "$DATA_DIR"
+}
+
+create_managed_config() {
+  local config_dir="$DATA_DIR/configs"
+  local config_file="$config_dir/znc.conf"
+  local group
+  local password
+  local salt
+  local password_hash
+  local version
+  local temp_file
+
+  if [ -f "$config_file" ] || [ -z "$ADMIN_USER" ]; then
+    return
+  fi
+
+  IFS= read -r password < "$ADMIN_PASSWORD_FILE" || true
+  if [ "${#password}" -lt 12 ]; then
+    echo "The initial ZNC administrator password must contain at least 12 characters." >&2
+    exit 2
+  fi
+
+  salt="$(od -An -N10 -tx1 /dev/urandom | tr -d '[:space:]')"
+  password_hash="$(printf '%s' "${password}${salt}" | sha256sum | awk '{ print $1 }')"
+  password=""
+  version="$(znc --version 2>/dev/null | sed -nE 's/^ZNC[[:space:]]+([^[:space:]]+).*/\1/p' | head -n 1)"
+  version="${version:-1.10}"
+  group="$(group_for_user)"
+
+  install -d -m 0700 -o "$ZNC_USER" -g "$group" "$config_dir"
+  temp_file="$(mktemp)"
+  cat > "$temp_file" <<EOF
+Version = $version
+ProtectWebSessions = true
+HideVersion = true
+
+<Listener tater-irc>
+	AllowIRC = true
+	AllowWeb = false
+	Host = 0.0.0.0
+	IPv4 = true
+	IPv6 = false
+	Port = $ZNC_PORT
+	SSL = false
+</Listener>
+
+<User $ADMIN_USER>
+	<Pass password>
+		Method = SHA256
+		Hash = $password_hash
+		Salt = $salt
+	</Pass>
+	Admin = true
+	Nick = $ADMIN_USER
+	AltNick = ${ADMIN_USER}_
+	Ident = $ADMIN_USER
+	RealName = $ADMIN_USER
+	Buffer = 50
+	AutoClearChanBuffer = true
+	MultiClients = true
+	LoadModule = chansaver
+	LoadModule = controlpanel
+</User>
+EOF
+  install -m 0600 -o "$ZNC_USER" -g "$group" "$temp_file" "$config_file"
+  rm -f "$temp_file"
+  echo "Created a managed ZNC configuration for administrator $ADMIN_USER."
 }
 
 configure_private_web_listener() {
@@ -425,6 +525,9 @@ EOF
 ZNC config exists and the service was $([ "$START_SERVICE" = "1" ] && printf 'started' || printf 'left stopped').
 
 EOF
+    if [ -n "$ADMIN_USER" ]; then
+      printf 'Initial administrator:\n  %s\n\n' "$ADMIN_USER"
+    fi
   else
     cat <<EOF
 ZNC config has not been created yet. Finish setup with:
@@ -459,15 +562,23 @@ Firewall:
 EOF
 }
 
-require_root
-validate_user
-validate_port
-require_systemd
-configure_firewall
-install_packages
-prepare_data_dir
-run_makeconf
-configure_private_web_listener
-write_service
-start_service_if_ready
-print_summary
+main() {
+  require_root
+  validate_user
+  validate_port
+  validate_managed_admin
+  require_systemd
+  configure_firewall
+  install_packages
+  prepare_data_dir
+  run_makeconf
+  create_managed_config
+  configure_private_web_listener
+  write_service
+  start_service_if_ready
+  print_summary
+}
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main
+fi

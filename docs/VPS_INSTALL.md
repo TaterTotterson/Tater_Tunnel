@@ -207,18 +207,21 @@ Caddy exposure, and UFW routing.
 ## Optional ZNC
 
 The menu can install ZNC for the selected sudo user. Its config remains under
-that user's home directory and the service starts at boot. The installer removes
-the old public Caddy subdomain route, keeps IRC and WebAdmin behind `tater0`, and
-explicitly blocks both ports on the public interface.
+that user's home directory and the service starts at boot. On first install,
+setup asks only for a ZNC administrator username and password, then creates the
+listeners, password hash, private WebAdmin, systemd service, and firewall rules
+automatically. Add IRC networks and channels afterward through WebAdmin.
+Existing ZNC configurations are preserved. The installer removes the old public
+Caddy subdomain route, keeps IRC and WebAdmin behind `tater0`, and explicitly
+blocks both ports on the public interface.
 
 ```bash
 sudo ./scripts/install-znc.sh --user tater --makeconf
 ```
 
 Connect WireGuard first, then use `10.88.0.1` and the selected ZNC IRC port.
-Open WebAdmin at `http://10.88.0.1:6698/`. The ZNC username and password created
-by its wizard remain a second security gate; use TLS for IRC and a unique
-password.
+Open WebAdmin at `http://10.88.0.1:6698/`. The ZNC username and password remain
+a second security gate. IRC and WebAdmin traffic are protected by WireGuard.
 
 ## Optional SFTPGo
 
