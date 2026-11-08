@@ -22,8 +22,9 @@
   service boundaries before verifying them.
 - The UFW audit recognizes both verbose rules and UFW's normalized
   `deny PORT/tcp` output, avoiding false missing-deny failures.
-- SFTPGo protocol setup now applies the SFTP, FTP, and WebDAV checklist choices
-  directly, including output from `dialog` versions that quote selected tags.
+- SFTPGo protocol setup now uses an explicit arrow-and-Enter protocol menu, so
+  the selected SFTP, FTP, and WebDAV combination is applied without ambiguous
+  checkbox highlighting or duplicate prompts.
 - SFTPGo setup now verifies every requested listener and waits for external
   WebDAV HTTPS to become usable before reporting a successful installation.
 
