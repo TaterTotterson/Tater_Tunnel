@@ -979,8 +979,6 @@ EOF
 
 create_sudo_user() {
   local username="$1"
-  local home_dir
-  local primary_group
 
   ensure_sudo_available
 
@@ -1002,17 +1000,6 @@ create_sudo_user() {
     exit 1
   fi
   printf '%sVerified: %s belongs to the sudo group (active on next login).%s\n' "$GREEN" "$username" "$RESET"
-
-  home_dir="$(getent passwd "$username" | awk -F: '{ print $6 }')"
-  home_dir="${home_dir:-/home/$username}"
-  primary_group="$(id -gn "$username")"
-
-  if [ -s /root/.ssh/authorized_keys ]; then
-    if confirm "Copy root SSH authorized_keys to $username" yes; then
-      install -d -m 0700 -o "$username" -g "$primary_group" "$home_dir/.ssh"
-      install -m 0600 -o "$username" -g "$primary_group" /root/.ssh/authorized_keys "$home_dir/.ssh/authorized_keys"
-    fi
-  fi
 }
 
 print_relogin_instructions() {
@@ -1035,21 +1022,8 @@ your PC:
   VPS_HOST=$host_hint
   ssh $username@\$VPS_HOST
 
-If you do not already use an SSH key for this VPS, run these from your PC:
-
-  ssh-keygen -t ed25519 -C "tater-tunnel-vps"
-  ssh-copy-id -i ~/.ssh/id_ed25519.pub $username@\$VPS_HOST
-  ssh $username@\$VPS_HOST
-
-After you confirm key-based login works, you can harden SSH with:
-
-  sudo install -d -m 0755 /etc/ssh/sshd_config.d
-  printf '%s\\n' 'PubkeyAuthentication yes' 'PasswordAuthentication no' 'PermitRootLogin no' | sudo tee /etc/ssh/sshd_config.d/99-tater-hardening.conf
-  sudo sshd -t
-  sudo systemctl reload ssh || sudo systemctl reload sshd
-
-Keep the current root SSH session open until you have tested a second login as
-$username. That avoids locking yourself out.
+The README has the short SSH-key command and hardening steps. Keep the current
+root session open until you have tested a second login as $username.
 EOF
 }
 
@@ -1069,9 +1043,9 @@ ${ORANGE}${BOLD}Root login detected.${RESET}
 For a blank VPS, create a normal sudo user first. That keeps the Tater install
 and future SSH access safer than doing day-to-day work as root.
 
-This setup will create the user, add it to the sudo group, optionally copy your
-root SSH keys, and continue in this session. System changes still run as root;
-user-owned services run as the new account.
+This setup will create the user, add it to the sudo group, and continue in this
+session. System changes still run as root; user-owned services run as the new
+account.
 
 EOF
 
@@ -1103,8 +1077,8 @@ ${ORANGE}${BOLD}Root login detected.${RESET}
 Optional user services like ZNC should run as a normal sudo user, with config
 stored in that user's home folder.
 
-This setup can create the sudo user, optionally copy root SSH keys, and then
-continue while running ZNC itself under that account.
+This setup can create the sudo user and then continue while running ZNC itself
+under that account.
 
 EOF
 

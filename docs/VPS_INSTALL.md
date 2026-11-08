@@ -26,21 +26,20 @@ already on the VPS, run `sudo ./scripts/tater-vps-setup.sh`.
 ## First Login As Root
 
 On a new VPS where the only account is root, run the setup command without
-`sudo`. The blank install path creates a normal sudo user, can copy existing
-authorized keys, and then continues the full setup in the same session. System
-changes remain privileged while user-owned services run under the new account.
+`sudo`. The blank install path creates a normal sudo user and then continues the
+full setup in the same session. System changes remain privileged while
+user-owned services run under the new account.
 
-For example:
+After setup, run these commands from your local computer:
 
 ```bash
-ssh-keygen -t ed25519 -C "tater-tunnel-vps"
-ssh-copy-id -i ~/.ssh/id_ed25519.pub tater@YOUR_VPS
+ssh-copy-id tater@YOUR_VPS
 ssh tater@YOUR_VPS
 ```
 
 Keep the original root session open until the new key login succeeds. There is
-no need to rerun the installer as the new user. These commands remain here so
-the install completion screen can stay focused on the URL and pairing code.
+no need to rerun the installer as the new user. The installer intentionally
+does not guess which key belongs to the computer you are using.
 
 After key login works, disable password and root SSH login:
 
@@ -49,6 +48,7 @@ sudo install -d -m 0755 /etc/ssh/sshd_config.d
 printf '%s\n' \
   'PubkeyAuthentication yes' \
   'PasswordAuthentication no' \
+  'KbdInteractiveAuthentication no' \
   'PermitRootLogin no' \
   | sudo tee /etc/ssh/sshd_config.d/99-tater-hardening.conf
 sudo sshd -t

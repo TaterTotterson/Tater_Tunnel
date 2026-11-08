@@ -256,6 +256,16 @@ class WireGuardRuntimeTests(unittest.TestCase):
         self.assertIn('show_pairing_completion "$domain" "$final_pairing_code"', setup)
         self.assertNotIn("VPS Agent service:", setup)
         self.assertNotIn("WireGuard port:", setup)
+        self.assertNotIn("authorized_keys", setup)
+        self.assertNotIn("ssh-copy-id", setup)
+
+        readme = (Path(__file__).parents[1] / "README.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("ssh-copy-id YOUR_USER@YOUR_VPS", readme)
+        self.assertIn("PasswordAuthentication no", readme)
+        self.assertIn("KbdInteractiveAuthentication no", readme)
+        self.assertIn("PermitRootLogin no", readme)
 
     def test_vps_service_allows_only_agent_tcp_and_wireguard_udp(self):
         installer = (

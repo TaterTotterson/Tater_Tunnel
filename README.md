@@ -57,8 +57,31 @@ Caddy HTTPS subdomain, while both browser admin pages remain private.
 
 If logged in directly as root, run the command without `sudo` first. The menu
 creates a normal sudo user and continues the full install in the same session.
-After setup, test the new account from a second terminal before disabling root
-or password SSH access.
+After setup, add your computer's normal SSH key and test the new account from a
+second terminal:
+
+```bash
+ssh-copy-id YOUR_USER@YOUR_VPS
+ssh YOUR_USER@YOUR_VPS
+```
+
+Keep the original root session open until the new key login succeeds. From the
+new sudo-user session, disable password and root SSH login:
+
+```bash
+sudo install -d -m 0755 /etc/ssh/sshd_config.d
+printf '%s\n' \
+  'PubkeyAuthentication yes' \
+  'PasswordAuthentication no' \
+  'KbdInteractiveAuthentication no' \
+  'PermitRootLogin no' \
+  | sudo tee /etc/ssh/sshd_config.d/99-tater-hardening.conf
+sudo sshd -t && (sudo systemctl reload ssh || sudo systemctl reload sshd)
+```
+
+Open one more terminal and confirm `ssh YOUR_USER@YOUR_VPS` still works before
+closing the original session. See [VPS Install](docs/VPS_INSTALL.md) for the
+full setup notes.
 
 Use the same command later and choose `Update Tater Tunnel`. For this
 WireGuard-only migration, the old tunnel identity is discarded and must be

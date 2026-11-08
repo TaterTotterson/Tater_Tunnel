@@ -11,9 +11,11 @@
 - The VPS setup console now uses a black, orange, and gray Tater theme.
 - Progress windows no longer interrupt the underlying installer and now report
   the real command status with useful failure details.
-- Dialog accents use a warmer red-orange instead of terminal yellow.
+- Dialog accents use portable terminal yellow/amber instead of red.
 - Completed and failed actions return to the main setup menu; only Exit closes
   the setup console during normal use.
+- New sudo accounts no longer inherit root's potentially unrelated SSH keys;
+  setup documentation now uses the standard `ssh-copy-id USER@SERVER` flow.
 
 # Tater Tunnel v0.2.11
 
