@@ -20,6 +20,8 @@
   OK/Cancel controls instead of waiting for input inside the progress window.
 - The guided security audit can repair stale managed firewall and optional
   service boundaries before verifying them.
+- The UFW audit recognizes both verbose rules and UFW's normalized
+  `deny PORT/tcp` output, avoiding false missing-deny failures.
 
 # Tater Tunnel v0.2.11
 

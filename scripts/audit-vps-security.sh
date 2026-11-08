@@ -44,6 +44,22 @@ pass() { printf '[PASS] %s\n' "$1"; }
 warn() { printf '[WARN] %s\n' "$1"; WARNINGS=$((WARNINGS + 1)); }
 fail() { printf '[FAIL] %s\n' "$1"; FAILURES=$((FAILURES + 1)); }
 
+has_tcp_deny_rule() {
+  local added="$1"
+  local port="$2"
+
+  grep -Eq "^ufw deny( in)? (${port}|${port}/tcp)([[:space:]]|$)" <<< "$added" \
+    || grep -Fq "ufw deny in to any port ${port} proto tcp" <<< "$added"
+}
+
+has_broad_tcp_allow_rule() {
+  local added="$1"
+  local port="$2"
+
+  grep -Eq "^ufw allow( in)? (${port}|${port}/tcp)([[:space:]]|$)" <<< "$added" \
+    || grep -Fq "ufw allow in to any port ${port} proto tcp" <<< "$added"
+}
+
 check_private_optional_port() {
   local added="$1"
   local port="$2"
@@ -54,12 +70,12 @@ check_private_optional_port() {
   else
     fail "$label is missing its WireGuard-only TCP $port allow rule"
   fi
-  if grep -Fq "deny in to any port ${port} proto tcp" <<< "$added"; then
+  if has_tcp_deny_rule "$added" "$port"; then
     pass "$label TCP $port is denied on public interfaces"
   else
     fail "$label is missing its public TCP $port deny rule"
   fi
-  if grep -Eq "^ufw allow (${port}|${port}/tcp)([[:space:]]|$)" <<< "$added"; then
+  if has_broad_tcp_allow_rule "$added" "$port"; then
     fail "$label still has a broad public TCP $port allow rule"
   else
     pass "$label has no broad public TCP $port allow rule"
@@ -71,12 +87,12 @@ check_public_optional_port() {
   local port="$2"
   local label="$3"
 
-  if grep -Eq "^ufw allow (${port}|${port}/tcp)([[:space:]]|$)" <<< "$added"; then
+  if has_broad_tcp_allow_rule "$added" "$port"; then
     pass "$label is allowed publicly on TCP $port"
   else
     fail "$label is missing its public TCP $port allow rule"
   fi
-  if grep -Fq "deny in to any port ${port} proto tcp" <<< "$added"; then
+  if has_tcp_deny_rule "$added" "$port"; then
     fail "$label TCP $port is still blocked on public interfaces"
   else
     pass "$label TCP $port has no conflicting public deny rule"
@@ -88,13 +104,13 @@ check_disabled_optional_port() {
   local port="$2"
   local label="$3"
 
-  if grep -Eq "^ufw allow (${port}|${port}/tcp)([[:space:]]|$)" <<< "$added" \
+  if has_broad_tcp_allow_rule "$added" "$port" \
     || grep -Fq "allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port ${port} proto tcp" <<< "$added"; then
     fail "$label is disabled but still has an allow rule on TCP $port"
   else
     pass "$label is disabled with no TCP $port allow rule"
   fi
-  if grep -Fq "deny in to any port ${port} proto tcp" <<< "$added"; then
+  if has_tcp_deny_rule "$added" "$port"; then
     pass "$label disabled TCP $port is denied"
   else
     fail "$label disabled TCP $port is missing its deny rule"
@@ -156,7 +172,7 @@ check_sftpgo_port() {
     elif [ -f "$WEBDAV_CADDY_SNIPPET" ]; then
       fail "SFTPGo WebDAV HTTPS proxy remains enabled while external WebDAV is off"
     fi
-  elif grep -Eq '^ufw allow (2022|2022/tcp)([[:space:]]|$)' <<< "$added"; then
+  elif has_broad_tcp_allow_rule "$added" 2022; then
     check_public_optional_port "$added" 2022 "SFTPGo SFTP"
   else
     check_private_optional_port "$added" 2022 "SFTPGo SFTP"
@@ -371,7 +387,7 @@ if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; the
   else
     fail "UFW is missing the exact Home Agent management rule"
   fi
-  if grep -Fq "deny in to any port ${LISTEN_PORT} proto tcp" <<< "$added"; then
+  if has_tcp_deny_rule "$added" "$LISTEN_PORT"; then
     pass "UFW denies public TCP $LISTEN_PORT"
   else
     fail "UFW is missing the public management-port deny"

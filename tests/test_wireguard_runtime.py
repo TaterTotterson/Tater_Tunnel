@@ -187,6 +187,9 @@ class WireGuardRuntimeTests(unittest.TestCase):
     def test_optional_service_access_boundaries(self):
         root = Path(__file__).parents[1]
         setup = (root / "scripts" / "tater-vps-setup.sh").read_text(encoding="utf-8")
+        audit = (root / "scripts" / "audit-vps-security.sh").read_text(
+            encoding="utf-8"
+        )
         sftpgo = (root / "scripts" / "install-sftpgo.sh").read_text(encoding="utf-8")
         znc = (root / "scripts" / "install-znc.sh").read_text(encoding="utf-8")
 
@@ -237,6 +240,9 @@ class WireGuardRuntimeTests(unittest.TestCase):
         self.assertIn("Block public ZNC WebAdmin", znc)
         self.assertIn("migrate_installed_znc_webadmin", setup)
         self.assertIn("/etc/caddy/tater-sites/znc-web.caddy", setup)
+        self.assertIn("has_tcp_deny_rule", audit)
+        self.assertIn('^ufw deny( in)? (${port}|${port}/tcp)', audit)
+        self.assertIn("has_broad_tcp_allow_rule", audit)
 
     def test_vps_setup_uses_focused_terminal_completion(self):
         setup = (
