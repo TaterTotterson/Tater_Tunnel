@@ -385,11 +385,11 @@ EOF
 
 configure_firewall() {
   if ! command -v ufw >/dev/null 2>&1; then
-    echo "UFW is required to keep SFTPGo private to Tater Tunnel." >&2
+    echo "UFW is required to expose SFTPGo safely." >&2
     exit 1
   fi
   if ! ufw status | grep -q '^Status: active'; then
-    echo "UFW must be active before SFTPGo can be exposed through Tater Tunnel." >&2
+    echo "UFW must be active before SFTPGo can be exposed." >&2
     exit 1
   fi
 
@@ -397,8 +397,7 @@ configure_firewall() {
   ufw --force delete allow "$SFTP_PORT" >/dev/null 2>&1 || true
   ufw --force delete allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$SFTP_PORT" proto tcp >/dev/null 2>&1 || true
   ufw --force delete deny in to any port "$SFTP_PORT" proto tcp >/dev/null 2>&1 || true
-  ufw allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port "$SFTP_PORT" proto tcp comment 'SFTPGo private WireGuard'
-  ufw deny in to any port "$SFTP_PORT" proto tcp comment 'Block public SFTPGo'
+  ufw allow "$SFTP_PORT/tcp" comment 'SFTPGo SFTP'
   ufw reload >/dev/null
 }
 
@@ -437,8 +436,7 @@ Service:
   sudo journalctl -u sftpgo -f
 
 SFTP clients:
-  Connect WireGuard first.
-  Host: 10.88.0.1
+  Host: your VPS public IP or your own DNS hostname
   Port: $SFTP_PORT
 
 First WebAdmin setup from your PC:
@@ -473,8 +471,7 @@ SFTPGo paths:
   User data: /srv/sftpgo/data
 
 Firewall:
-  Allowed $SFTP_PORT/tcp only from 10.88.0.0/24 on tater0.
-  Blocked public access to $SFTP_PORT/tcp.
+  Allowed public $SFTP_PORT/tcp for SFTP clients.
   Kept the web interface private; no rule was added for $WEB_PORT/tcp.
 
 EOF

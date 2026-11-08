@@ -394,6 +394,14 @@ harden_optional_service_port() {
   ufw deny in to any port "$port" proto tcp comment "Block public $label"
 }
 
+configure_public_sftpgo_port() {
+  ufw --force delete allow 2022/tcp >/dev/null 2>&1 || true
+  ufw --force delete allow 2022 >/dev/null 2>&1 || true
+  ufw --force delete allow in on tater0 from 10.88.0.0/24 to 10.88.0.1 port 2022 proto tcp >/dev/null 2>&1 || true
+  ufw --force delete deny in to any port 2022 proto tcp >/dev/null 2>&1 || true
+  ufw allow 2022/tcp comment 'SFTPGo SFTP'
+}
+
 installed_znc_ports() {
   local config
   local data_dir
@@ -423,7 +431,7 @@ harden_installed_optional_services() {
   fi
 
   if command -v sftpgo >/dev/null 2>&1 || systemctl cat sftpgo.service >/dev/null 2>&1; then
-    harden_optional_service_port 2022 SFTPGo
+    configure_public_sftpgo_port
   fi
   while read -r port; do
     if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
@@ -1265,7 +1273,7 @@ ${BOLD}Ready to install:${RESET}
   WireGuard:   51888/udp
   Firewall:    $([ "$configure_firewall" = "1" ] && printf 'enabled' || printf 'unchanged')
   ZNC:         $([ "$install_znc" = "1" ] && printf '10.88.0.1:%s through WireGuard' "$znc_port" || printf 'not installed')
-  SFTPGo:      $([ "$install_sftpgo" = "1" ] && printf '10.88.0.1:2022 through WireGuard' || printf 'not installed')
+  SFTPGo:      $([ "$install_sftpgo" = "1" ] && printf 'public SFTP on 2022/tcp' || printf 'not installed')
 $([ -n "$sftpgo_storage_cap_gb" ] && printf '  SFTP storage: %s GiB total cap\n' "$sftpgo_storage_cap_gb")
   Cloudflare:  $([ "$configure_cloudflare" = "1" ] && printf 'create the tunnel DNS record in %s' "$cloudflare_zone" || printf 'manual DNS setup')
 
@@ -1316,8 +1324,7 @@ EOF
     cat <<EOF
 
 SFTPGo connection:
-  Connect WireGuard first.
-  Host: 10.88.0.1
+  Host: your VPS public IP or your own DNS hostname
   Port: 2022
 
 EOF
@@ -1492,8 +1499,8 @@ This installs the current open-source SFTPGo release and enables its systemd
 service at boot. Running it again updates SFTPGo while preserving its existing
 configuration, users, and files.
 
-SFTP uses port 2022 through Tater Tunnel WireGuard only. WebAdmin uses port
-8080, but stays on localhost and is reached through an SSH port forward.
+SFTP uses public port 2022 so separate SFTPGo users can connect without
+WireGuard. WebAdmin stays on localhost and is reached through an SSH forward.
 
 EOF
 
@@ -1513,9 +1520,9 @@ EOF
 ${BOLD}Ready to install or update SFTPGo:${RESET}
   Edition:     Open source (current stable release)
   Service:     enabled at boot
-  SFTP:        10.88.0.1:2022 through WireGuard only
+  SFTP:        public port 2022/tcp
   WebAdmin:    http://127.0.0.1:8080/web/admin
-  Firewall:    public 2022/tcp blocked
+  Firewall:    public 2022/tcp allowed; WebAdmin remains private
   Login:       first admin through an SSH tunnel; enable TOTP after login
   Hardening:   defender enabled, strong passwords, exact version hidden
   Storage:     $([ -n "$storage_cap_gb" ] && printf '%s GiB total cap' "$storage_cap_gb" || printf 'no installer-managed total cap')

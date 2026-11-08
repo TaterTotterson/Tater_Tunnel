@@ -65,6 +65,26 @@ check_private_optional_port() {
   fi
 }
 
+check_public_sftpgo_port() {
+  local added="$1"
+
+  if grep -Eq '^ufw allow (2022|2022/tcp)([[:space:]]|$)' <<< "$added"; then
+    pass "SFTPGo public SFTP is allowed on TCP 2022"
+  else
+    fail "SFTPGo is missing its public TCP 2022 allow rule"
+  fi
+  if grep -Fq 'deny in to any port 2022 proto tcp' <<< "$added"; then
+    fail "SFTPGo TCP 2022 is still blocked on public interfaces"
+  else
+    pass "SFTPGo TCP 2022 has no conflicting public deny rule"
+  fi
+  if grep -Eq '^ufw allow (8080|8080/tcp)([[:space:]]|$)' <<< "$added"; then
+    fail "SFTPGo WebAdmin TCP 8080 is publicly allowed"
+  else
+    pass "SFTPGo WebAdmin has no public TCP 8080 allow rule"
+  fi
+}
+
 installed_znc_ports() {
   local config
   local data_dir
@@ -290,7 +310,7 @@ if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; the
     pass "No broad device-network management rule remains"
   fi
   if command -v sftpgo >/dev/null 2>&1 || systemctl cat sftpgo.service >/dev/null 2>&1; then
-    check_private_optional_port "$added" 2022 SFTPGo
+    check_public_sftpgo_port "$added"
   fi
   found_znc="0"
   while read -r port; do
