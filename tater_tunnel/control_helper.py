@@ -45,6 +45,26 @@ class ControlHelperClientError(Exception):
     pass
 
 
+class CpuSampler:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._previous = read_cpu_times()
+
+    def percent(self) -> float:
+        current = read_cpu_times()
+        with self._lock:
+            previous = self._previous
+            self._previous = current
+        if previous is None or current is None:
+            return 0.0
+        total_delta = current[0] - previous[0]
+        idle_delta = current[1] - previous[1]
+        if total_delta <= 0:
+            return 0.0
+        busy_delta = max(0, total_delta - max(0, idle_delta))
+        return round(min(100.0, busy_delta / total_delta * 100), 1)
+
+
 class ControlHelperClient:
     def __init__(self, socket_path: Path | str = DEFAULT_SOCKET_PATH):
         self.socket_path = Path(socket_path)
@@ -91,6 +111,7 @@ class ControlHelperService:
     def __init__(self, install_dir: Path | str = DEFAULT_INSTALL_DIR):
         self.install_dir = Path(install_dir).resolve()
         self._mutation_lock = threading.Lock()
+        self._cpu_sampler = CpuSampler()
 
     def execute(self, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
         if operation == "snapshot":
@@ -108,7 +129,7 @@ class ControlHelperService:
 
     def snapshot(self) -> dict[str, Any]:
         return {
-            "system": system_snapshot(),
+            "system": system_snapshot(self._cpu_sampler),
             "apps": {
                 "sftpgo": sftpgo_snapshot(),
                 "znc": znc_snapshot(),
@@ -310,10 +331,10 @@ class ControlHelperService:
         return path
 
 
-def system_snapshot() -> dict[str, Any]:
+def system_snapshot(cpu_sampler: CpuSampler | None = None) -> dict[str, Any]:
     memory = memory_snapshot()
     disk = disk_snapshot()
-    load = load_snapshot()
+    load = load_snapshot(cpu_sampler.percent() if cpu_sampler is not None else 0.0)
     uptime_seconds = read_uptime_seconds()
     return {
         "hostname": socket.gethostname(),
@@ -345,13 +366,24 @@ def operating_system_name() -> str:
     return str(values.get("PRETTY_NAME") or platform.platform()).strip('"')
 
 
-def load_snapshot() -> dict[str, Any]:
+def load_snapshot(cpu_percent: float = 0.0) -> dict[str, Any]:
     try:
         load1 = float(Path("/proc/loadavg").read_text(encoding="utf-8").split()[0])
     except (OSError, ValueError, IndexError):
         load1 = 0.0
-    cpus = max(1, os.cpu_count() or 1)
-    return {"load1": round(load1, 2), "percent": round(min(100.0, load1 / cpus * 100), 1)}
+    return {"load1": round(load1, 2), "percent": round(max(0.0, min(100.0, cpu_percent)), 1)}
+
+
+def read_cpu_times() -> tuple[int, int] | None:
+    try:
+        fields = Path("/proc/stat").read_text(encoding="utf-8").splitlines()[0].split()
+        if not fields or fields[0] != "cpu" or len(fields) < 5:
+            return None
+        values = [int(value) for value in fields[1:9]]
+    except (OSError, ValueError, IndexError):
+        return None
+    idle = values[3] + (values[4] if len(values) > 4 else 0)
+    return sum(values), idle
 
 
 def memory_snapshot() -> dict[str, Any]:
