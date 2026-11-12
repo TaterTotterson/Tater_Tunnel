@@ -47,7 +47,8 @@ const elements = Object.fromEntries([
   "servicePreset", "serviceName", "serviceHost", "servicePort", "serviceProtocol",
   "serviceAccessPort", "deviceCountBadge", "deviceList", "routeList", "qrPanel", "qrImage",
   "qrTitle", "qrToken", "closeQrButton", "homeVersion", "vpsVersion", "updateVpsName",
-  "vpsUpdateBadge", "checkUpdatesButton", "systemFacts", "auditButton", "auditBadge",
+  "vpsUpdateBadge", "checkUpdatesButton", "updateVpsButton", "vpsUpdateMessage", "systemFacts",
+  "processList", "auditButton", "auditBadge",
   "auditOutput", "appDialog", "appManagerForm", "closeAppDialog", "cancelAppChanges",
   "disableAppButton", "saveAppChanges", "dialogAppMark", "dialogTitle", "sftpgoRuntimeBadge",
   "sftpgoEndpoints", "sftpgoStorage", "sftpAccess", "ftpAccess", "webdavAccess",
@@ -75,6 +76,7 @@ function bindEvents() {
   elements.refreshButton.addEventListener("click", () => refreshAll(false));
   elements.checkAppsButton.addEventListener("click", () => refreshControl(false));
   elements.checkUpdatesButton.addEventListener("click", () => refreshAll(false));
+  elements.updateVpsButton.addEventListener("click", updateVps);
   elements.auditButton.addEventListener("click", runSecurityAudit);
   elements.addServiceButton.addEventListener("click", () => openInlineForm(elements.serviceForm, elements.serviceName));
   document.querySelectorAll("[data-open-device]").forEach((button) => button.addEventListener("click", () => {
@@ -227,7 +229,7 @@ function renderControl() {
 
 function renderMetrics() {
   const system = control?.system || {};
-  setMetric(elements.cpuValue, elements.cpuMeter, elements.cpuDetail, system.cpuPercent, `${number(system.cpuPercent)}%`, `${system.cpuCount || 0} virtual cores`);
+  setMetric(elements.cpuValue, elements.cpuMeter, elements.cpuDetail, system.cpuPercent, `${number(system.cpuPercent)}%`, `${system.cpuCount || 0} virtual cores / load ${number(system.load1)}`);
   const memory = system.memory || {};
   setMetric(elements.memoryValue, elements.memoryMeter, elements.memoryDetail, memory.percent, formatBytes(memory.usedBytes), `of ${formatBytes(memory.totalBytes)}`);
   const disk = system.disk || {};
@@ -370,6 +372,15 @@ function renderSystem() {
     row.innerHTML = `<dt>${label}</dt><dd>${escapeHtml(value || "Unavailable")}</dd>`;
     elements.systemFacts.append(row);
   });
+  elements.processList.replaceChildren();
+  const processes = system.topProcesses || [];
+  if (!processes.length) elements.processList.append(emptyRow("No process sample is available."));
+  processes.forEach((process) => {
+    const row = document.createElement("div");
+    row.className = "process-row";
+    row.innerHTML = `<strong>${escapeHtml(process.name || "process")} <span>PID ${escapeHtml(process.pid)}</span></strong><span>${number(process.cpuPercent)}% CPU</span><span>${number(process.memoryPercent)}% memory</span>`;
+    elements.processList.append(row);
+  });
 }
 
 function renderUpdates() {
@@ -377,8 +388,54 @@ function renderUpdates() {
   elements.vpsVersion.textContent = state.vpsAgent?.health?.version || control?.updates?.vps?.installed || "--";
   elements.updateVpsName.textContent = vpsDisplayName();
   const update = control?.updates?.vps;
-  elements.vpsUpdateBadge.textContent = update?.status === "current" ? "Current" : "Check setup menu";
-  elements.vpsUpdateBadge.className = `state-badge ${update?.status === "current" ? "is-good" : "is-warm"}`;
+  const status = update?.status || "current";
+  const statusLabels = { current: "Current", scheduled: "Scheduled", running: "Updating", complete: "Updated", failed: "Failed" };
+  elements.vpsUpdateBadge.textContent = statusLabels[status] || "Ready";
+  elements.vpsUpdateBadge.className = `state-badge ${["current", "complete"].includes(status) ? "is-good" : "is-warm"}`;
+  elements.vpsUpdateMessage.textContent = update?.message || "Checks the official stable releases.";
+  elements.updateVpsButton.hidden = control?.capabilities?.vpsUpdate !== true;
+  elements.updateVpsButton.disabled = ["scheduled", "running"].includes(status);
+}
+
+async function updateVps() {
+  if (!window.confirm("Update the VPS Agent from the newest official stable release? Pairing, devices, routes, and app settings will be preserved.")) return;
+  elements.updateVpsButton.disabled = true;
+  elements.vpsUpdateMessage.textContent = "Scheduling the protected VPS update.";
+  try {
+    await runJob("update-vps", {}, "Scheduling VPS update", false);
+    showToast("VPS update started. The private tunnel may pause briefly.");
+    await waitForVpsUpdate();
+    showToast("The VPS Agent update is complete.");
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    elements.updateVpsButton.disabled = false;
+  }
+}
+
+async function waitForVpsUpdate() {
+  const deadline = Date.now() + 10 * 60 * 1000;
+  let lastError = "";
+  await wait(6_000);
+  while (Date.now() < deadline) {
+    elements.vpsUpdateMessage.textContent = "Waiting for the VPS Agent to restart.";
+    try {
+      state = normalizeState(await requestApi("/api/health", { method: "POST", body: {} }));
+      control = await requestApi("/api/control/overview");
+      connectionError = "";
+      controlError = "";
+      renderStatus();
+      renderControl();
+      const update = control?.updates?.vps || {};
+      if (update.status === "failed") throw new Error(update.message || "The VPS update failed.");
+      if (["current", "complete"].includes(update.status)) return;
+    } catch (error) {
+      lastError = error.message || "The private tunnel is restarting.";
+      if (/update failed/i.test(lastError)) throw error;
+    }
+    await wait(3_000);
+  }
+  throw new Error(lastError || "Timed out waiting for the VPS Agent update.");
 }
 
 function openAppDialog(appId) {

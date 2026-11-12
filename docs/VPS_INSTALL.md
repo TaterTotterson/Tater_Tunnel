@@ -144,10 +144,15 @@ There is no HTTPS relay fallback.
 
 ## Updating
 
-Run the same one-command setup and choose `Update Tater Tunnel`. It updates
-the installed source, preserves current schema-v2 state, rewrites Caddy to the
-bootstrap-only policy, repairs UFW rules, and restarts the service. Choose to
-reopen pairing only when connecting a fresh Home Agent.
+Use **Updates > Update VPS** in the Home Agent Control Center to install the
+newest official stable release. It preserves current schema-v2 state, rewrites
+Caddy to the bootstrap-only policy, repairs UFW rules, and restarts the private
+services. The updater does not accept a custom repository, branch, tag, package,
+or command from the browser.
+
+For recovery or terminal maintenance, run the same one-command setup and choose
+`Update Tater Tunnel`. Choose to reopen pairing only when connecting a fresh
+Home Agent.
 
 To test another branch or fork:
 

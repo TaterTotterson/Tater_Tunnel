@@ -11,7 +11,9 @@ import socket
 import socketserver
 import struct
 import subprocess
+import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +30,7 @@ SFTPGO_ENV_PATH = Path("/etc/sftpgo/env.d/tater-tunnel.env")
 SFTPGO_STORAGE_IMAGE = Path("/var/lib/sftpgo-storage/tater-data.img")
 SFTPGO_STORAGE_ROOT = Path("/srv/sftpgo/data")
 ZNC_UNIT_DIR = Path("/etc/systemd/system")
+UPDATE_STATUS_PATH = Path("/var/lib/tater-tunnel/update-status.json")
 WIREGUARD_HOST = "10.88.0.1"
 VALID_ACCESS = {
     "sftp": {"disabled", "private", "public"},
@@ -125,6 +128,9 @@ class ControlHelperService:
         if operation == "security-audit":
             with self._mutation_lock:
                 return self.security_audit(payload)
+        if operation == "update-vps":
+            with self._mutation_lock:
+                return self.schedule_vps_update()
         raise ControlHelperError("Control operation is not allowed")
 
     def snapshot(self) -> dict[str, Any]:
@@ -134,19 +140,42 @@ class ControlHelperService:
                 "sftpgo": sftpgo_snapshot(),
                 "znc": znc_snapshot(),
             },
-            "updates": {
-                "vps": {
-                    "installed": __version__,
-                    "latest": __version__,
-                    "status": "current",
-                    "automaticApply": False,
-                }
-            },
+            "updates": {"vps": vps_update_snapshot()},
             "capabilities": {
                 "appManagement": True,
                 "securityAudit": True,
-                "vpsUpdate": False,
+                "vpsUpdate": True,
             },
+        }
+
+    def schedule_vps_update(self) -> dict[str, Any]:
+        status = vps_update_snapshot()
+        if status["status"] in {"scheduled", "running"}:
+            raise ControlHelperError("A VPS update is already running")
+
+        script = self._script("update-vps-from-ui.sh")
+        unit = f"tater-tunnel-update-{int(time.time())}"
+        write_vps_update_status("scheduled", "", "The VPS update is scheduled.")
+        completed = run_command(
+            [
+                "systemd-run",
+                "--quiet",
+                "--collect",
+                "--no-block",
+                f"--unit={unit}",
+                "--property=Type=oneshot",
+                "--property=TimeoutStartSec=1800",
+                str(script),
+            ],
+            timeout=15,
+        )
+        if completed.returncode != 0:
+            output = combined_output(completed)
+            write_vps_update_status("failed", "", "The VPS update could not be scheduled.")
+            raise ControlHelperError(output or "The VPS update could not be scheduled")
+        return {
+            "status": "scheduled",
+            "message": "The official VPS updater was scheduled.",
         }
 
     def configure_app(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -349,6 +378,7 @@ def system_snapshot(cpu_sampler: CpuSampler | None = None) -> dict[str, Any]:
         "disk": disk,
         "uptimeSeconds": uptime_seconds,
         "uptimeLabel": format_uptime(uptime_seconds),
+        "topProcesses": process_snapshot(),
     }
 
 
@@ -430,6 +460,80 @@ def format_uptime(seconds: int) -> str:
     if hours:
         return f"{hours}h {minutes}m"
     return f"{minutes}m"
+
+
+def process_snapshot(limit: int = 5) -> list[dict[str, Any]]:
+    try:
+        completed = run_command(
+            ["ps", "-eo", "pid=,comm=,%cpu=,%mem=", "--sort=-%cpu"], timeout=5
+        )
+    except ControlHelperError:
+        return []
+    if completed.returncode != 0:
+        return []
+    processes = []
+    for line in completed.stdout.splitlines()[:limit]:
+        fields = line.split(None, 3)
+        if len(fields) != 4:
+            continue
+        try:
+            pid = int(fields[0])
+            cpu = max(0.0, float(fields[2]))
+            memory = max(0.0, float(fields[3]))
+        except ValueError:
+            continue
+        processes.append(
+            {"pid": pid, "name": fields[1][:80], "cpuPercent": cpu, "memoryPercent": memory}
+        )
+    return processes
+
+
+def vps_update_snapshot() -> dict[str, Any]:
+    result = {
+        "installed": __version__,
+        "latest": __version__,
+        "status": "current",
+        "message": "Ready to check the official releases.",
+        "updatedAt": "",
+        "automaticApply": True,
+    }
+    try:
+        loaded = json.loads(UPDATE_STATUS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return result
+    if not isinstance(loaded, dict):
+        return result
+    status = str(loaded.get("status") or "")
+    if status in {"current", "scheduled", "running", "complete", "failed"}:
+        result["status"] = status
+    version = str(loaded.get("latestVersion") or "")
+    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+        result["latest"] = version
+    result["message"] = str(loaded.get("message") or result["message"])[:240]
+    result["updatedAt"] = str(loaded.get("updatedAt") or "")[:64]
+    return result
+
+
+def write_vps_update_status(status: str, version: str, message: str) -> None:
+    UPDATE_STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    body = {
+        "status": status,
+        "latestVersion": version.removeprefix("v"),
+        "message": message[:240],
+        "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".update-status.", dir=UPDATE_STATUS_PATH.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(body, handle, separators=(",", ":"))
+            handle.write("\n")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, UPDATE_STATUS_PATH)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def sftpgo_snapshot() -> dict[str, Any]:

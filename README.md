@@ -193,6 +193,11 @@ App changes run as background jobs on the VPS. Passwords and Cloudflare tokens
 are sent only through the private WireGuard management path and are not kept in
 job history.
 
+The **Updates** view can install the newest official stable VPS release. The
+managed updater accepts no repository, branch, package, or shell input. It
+preserves pairing and service state, reapplies the managed security boundaries,
+and reports completion after the VPS Agent restarts.
+
 ## Tunnel Addresses
 
 | Address | Purpose |
@@ -206,7 +211,9 @@ added in the Home Agent.
 
 ## VPS Management
 
-Run the setup command again for updates and maintenance. The menu provides:
+After installing a release with Control Center updates, later stable VPS
+releases can be applied from the **Updates** view. The setup command remains
+available for recovery and terminal maintenance. Its menu provides:
 
 - **Update Tater Tunnel**: updates code while preserving current state.
 - **Install agent only**: advanced path for an existing proxy and firewall.

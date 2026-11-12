@@ -10,6 +10,7 @@ BRANCH="${TATER_TUNNEL_BRANCH:-main}"
 SOURCE_DIR="${TATER_TUNNEL_SOURCE_DIR:-/opt/tater-tunnel-src}"
 NO_BOOTSTRAP="0"
 NO_RUN="0"
+AUTOMATIC_UPDATE="0"
 IN_REPO_SOURCE="0"
 SERVICE_NAME="tater-tunnel-vps"
 SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME.service"
@@ -109,6 +110,7 @@ Options:
   --source-dir PATH   Source checkout directory. Default: /opt/tater-tunnel-src
   --no-bootstrap      Do not download/update source first.
   --no-run            Download/update only; do not launch the setup menu.
+  --automatic-update  Internal non-interactive update used by Control Center.
   -h, --help          Show this help.
 
 Environment:
@@ -328,6 +330,10 @@ parse_args() {
         ;;
       --no-run)
         NO_RUN="1"
+        shift
+        ;;
+      --automatic-update)
+        AUTOMATIC_UPDATE="1"
         shift
         ;;
       -h|--help)
@@ -1881,6 +1887,59 @@ Optional private services: checked and migrated"; then
   show_progress_handoff "Applying private-service migrations." apply_update_hardening "$listen_port" "$wg_management_access"
 }
 
+run_automatic_update_install() {
+  local exec_start
+  local working_dir
+  local listen_host
+  local listen_port
+  local state_file
+  local config_file
+  local install_dir
+  local state_dir
+  local config_dir
+  local wireguard_interface
+  local wg_management_access="0"
+  local -a args
+
+  require_root_for_install
+  if [ ! -f "$SERVICE_FILE" ]; then
+    echo "No existing Tater Tunnel VPS service was found." >&2
+    exit 1
+  fi
+
+  exec_start="$(service_value "ExecStart")"
+  working_dir="$(service_value "WorkingDirectory")"
+  listen_host="$(service_arg "$exec_start" "--host" "127.0.0.1")"
+  listen_port="$(service_arg "$exec_start" "--port" "4174")"
+  state_file="$(service_arg "$exec_start" "--state-file" "/var/lib/tater-tunnel/vps-agent.json")"
+  config_file="$(service_arg "$exec_start" "--wireguard-config" "/etc/tater-tunnel/wireguard/tater0.conf")"
+  install_dir="${working_dir:-/opt/tater-tunnel}"
+  state_dir="$(dirname "$state_file")"
+  config_dir="$(dirname "$(dirname "$config_file")")"
+  wireguard_interface="$(basename "$config_file" .conf)"
+
+  if [ "$listen_host" = "0.0.0.0" ]; then
+    wg_management_access="1"
+  fi
+
+  args=(
+    "$SCRIPT_DIR/install-vps-agent.sh"
+    --listen-host "$listen_host"
+    --listen-port "$listen_port"
+    --install-dir "$install_dir"
+    --state-dir "$state_dir"
+    --config-dir "$config_dir"
+    --wireguard-interface "$wireguard_interface"
+    --skip-packages
+  )
+  if [ "$wg_management_access" = "1" ]; then
+    args+=(--wireguard-management-access)
+  fi
+
+  "${args[@]}"
+  apply_update_hardening "$listen_port" "$wg_management_access"
+}
+
 run_full_install() {
   local domain
   local email
@@ -2595,6 +2654,12 @@ main() {
 
   parse_args "$@"
   bootstrap_source_if_needed
+
+  if [ "$AUTOMATIC_UPDATE" = "1" ]; then
+    run_automatic_update_install
+    exit 0
+  fi
+
   enable_dialog_ui
 
   if [ "$NO_RUN" = "1" ]; then

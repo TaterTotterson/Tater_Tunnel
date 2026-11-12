@@ -215,7 +215,7 @@ class VpsConfigStore:
 
 
 class VpsControlJobs:
-    ALLOWED_OPERATIONS = {"configure-app", "service-action", "security-audit"}
+    ALLOWED_OPERATIONS = {"configure-app", "service-action", "security-audit", "update-vps"}
 
     def __init__(self, client: ControlHelperClient):
         self.client = client
