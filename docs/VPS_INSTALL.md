@@ -67,7 +67,7 @@ need:
 
 The installer:
 
-- Installs the `tater-tunnel-vps` systemd service.
+- Installs the `tater-tunnel-vps` and `tater-tunnel-control` systemd services.
 - Creates the `tater0` WireGuard interface at `10.88.0.1/24`.
 - Installs Caddy and obtains the hostname certificate automatically.
 - Exposes only `/`, the landing mascot, and `POST /api/claim` through Caddy.
@@ -296,6 +296,6 @@ Choose `Uninstall Tater Tunnel` in the guided menu or run:
 sudo ./scripts/uninstall-vps.sh
 ```
 
-It removes the VPS service and app files, then asks before deleting state,
+It removes the VPS Agent, its privileged control helper, and app files, then asks before deleting state,
 WireGuard configuration, UFW rules, source checkout, or Caddy configuration.
 It does not remove shared packages, ZNC, or SFTPGo data.

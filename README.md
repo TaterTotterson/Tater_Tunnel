@@ -48,6 +48,7 @@ Choose **Install on a blank VPS**. The guided installer configures:
 - Caddy with automatic HTTPS.
 - UFW with private management and service-routing rules.
 - The `tater-tunnel-vps` systemd service.
+- A local privileged helper for allow-listed app and audit actions.
 - Optional Cloudflare DNS, ZNC, and SFTPGo setup.
 
 When logged in directly as root, omit `sudo`. The installer creates a normal
@@ -176,6 +177,22 @@ or `https://` scheme. For example, Tater SpudLink can use
 
 The forwarding layer does not rewrite paths, headers, or WebSocket traffic.
 
+## Control Center
+
+After pairing, the Home Agent becomes a private VPS control center. It shows
+VPS CPU, memory, disk, uptime, devices, routes, app status, and WireGuard-only
+app addresses.
+
+The **Apps** view can install or reconfigure SFTPGo and ZNC with the same
+guarded settings as the terminal setup menu. SFTPGo protocol exposure, storage
+cap, WebDAV hostname, and optional one-time Cloudflare DNS setup are available
+there. ZNC owner, listeners, and initial administrator setup are available
+there as well.
+
+App changes run as background jobs on the VPS. Passwords and Cloudflare tokens
+are sent only through the private WireGuard management path and are not kept in
+job history.
+
 ## Tunnel Addresses
 
 | Address | Purpose |
@@ -201,6 +218,7 @@ Useful commands:
 
 ```bash
 sudo systemctl status tater-tunnel-vps
+sudo systemctl status tater-tunnel-control
 sudo journalctl -u tater-tunnel-vps -f
 sudo wg show tater0
 ```
@@ -284,6 +302,10 @@ Keep the original root session open until the new key login succeeds.
 - VPS management requires WireGuard source validation and a random management
   token.
 - The Home Agent UI accepts only local requests.
+- VPS app-management endpoints additionally require a loopback client on the
+  Home Agent computer.
+- Privileged app changes use a root-owned Unix socket and typed, allow-listed
+  commands; there is no shell or arbitrary-command endpoint.
 - Private listeners bind to `10.88.0.2` and forward only to explicit targets.
 - UFW routes remote peers only to the Home Agent service range; unconfigured
   ports have no listener.

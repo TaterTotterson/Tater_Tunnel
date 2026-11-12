@@ -2,8 +2,10 @@
 set -Eeuo pipefail
 
 SERVICE_NAME="tater-tunnel-vps"
+CONTROL_SERVICE_NAME="tater-tunnel-control"
 SERVICE_USER="tater-tunnel"
 SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME.service"
+CONTROL_SERVICE_FILE="/etc/systemd/system/$CONTROL_SERVICE_NAME.service"
 INSTALL_DIR="/opt/tater-tunnel"
 STATE_DIR="/var/lib/tater-tunnel"
 CONFIG_DIR="/etc/tater-tunnel"
@@ -158,6 +160,7 @@ print_plan() {
 Tater Tunnel VPS uninstall plan:
 
   Service:        $SERVICE_NAME
+  Control helper: $CONTROL_SERVICE_NAME
   Install dir:    $INSTALL_DIR
   State dir:      $STATE_DIR
   Config dir:     $CONFIG_DIR
@@ -167,6 +170,7 @@ Tater Tunnel VPS uninstall plan:
 
 Will remove:
   - Tater Tunnel systemd service
+  - Privileged Tater Tunnel control helper
   - Installed app files
   - Live WireGuard interface if it exists
   - Tater service user/group if state/config data is purged
@@ -187,9 +191,13 @@ stop_service() {
 
   systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
   systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
+  systemctl stop "$CONTROL_SERVICE_NAME" >/dev/null 2>&1 || true
+  systemctl disable "$CONTROL_SERVICE_NAME" >/dev/null 2>&1 || true
   rm -f "$SERVICE_FILE"
+  rm -f "$CONTROL_SERVICE_FILE"
   systemctl daemon-reload >/dev/null 2>&1 || true
   systemctl reset-failed "$SERVICE_NAME" >/dev/null 2>&1 || true
+  systemctl reset-failed "$CONTROL_SERVICE_NAME" >/dev/null 2>&1 || true
 }
 
 remove_wireguard_interface() {

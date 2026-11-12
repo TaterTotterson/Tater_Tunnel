@@ -3,204 +3,127 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="theme-color" content="#11100f">
+    <meta name="theme-color" content="#0d0d0c">
     <title>Tater Tunnel</title>
     <link rel="stylesheet" href="styles.css">
   </head>
-  <body>
-    <div class="app-shell" id="appShell">
-      <header class="topbar">
-        <img class="brand-logo" src="assets/tater-logo-primary.png" alt="Tater">
-      </header>
+  <body class="is-loading">
+    <section class="setup-screen" id="setupScreen" hidden>
+      <div class="setup-copy">
+        <img class="setup-logo" src="assets/tater-logo-primary.png" alt="Tater Tunnel">
+        <p class="eyebrow">Private remote access</p>
+        <h1>Connect your VPS.</h1>
+        <p>The one-time code creates a private WireGuard management path. After pairing, this page becomes your control center.</p>
+        <form class="setup-form" id="pairForm">
+          <label class="field"><span>VPS URL</span><input id="vpsAddress" type="url" placeholder="https://tunnel.example.com" autocomplete="url" required></label>
+          <label class="field"><span>One-time pairing code</span><input id="pairingCode" type="text" placeholder="ABCDE-12345" autocomplete="one-time-code" required></label>
+          <button class="button button-primary" type="submit">Connect</button>
+          <button class="button button-secondary" id="cancelReconnect" type="button" hidden>Back</button>
+        </form>
+        <p class="setup-error" id="setupError" role="alert" hidden></p>
+      </div>
+      <img class="setup-mascot" src="assets/tater-vps-mascot.png" alt="Tater mascot connecting two network cables">
+    </section>
 
-      <main>
-        <section class="hero" aria-labelledby="pageTitle">
-          <div class="hero-copy">
-            <p class="eyebrow">Tater Tunnel</p>
-            <h1 id="pageTitle">Private remote access</h1>
-            <p class="hero-description">
-              Reach selected apps at home through your own VPS. Only approved WireGuard devices can enter the private path.
-            </p>
-            <div class="connection-pill" id="connectionPill">
-              <span class="status-light" aria-hidden="true"></span>
-              <span id="statusText">Ready to connect</span>
+    <div class="control-shell" id="controlShell" hidden>
+      <aside class="sidebar">
+        <div class="brand-lockup"><img src="assets/tater-logo-primary.png" alt="Tater"><span>Tunnel</span></div>
+        <nav class="primary-nav" aria-label="Control center">
+          <button class="nav-item is-active" data-view="overview" type="button"><span class="nav-icon" aria-hidden="true">O</span><span>Overview</span></button>
+          <button class="nav-item" data-view="apps" type="button"><span class="nav-icon" aria-hidden="true">A</span><span>Apps</span><span class="nav-count" id="appCount">0</span></button>
+          <button class="nav-item" data-view="tunnel" type="button"><span class="nav-icon" aria-hidden="true">T</span><span>Tunnel</span></button>
+          <button class="nav-item" data-view="updates" type="button"><span class="nav-icon" aria-hidden="true">U</span><span>Updates</span></button>
+          <button class="nav-item" data-view="system" type="button"><span class="nav-icon" aria-hidden="true">S</span><span>System</span></button>
+        </nav>
+        <div class="sidebar-foot">
+          <div class="vps-identity"><span class="status-orbit" aria-hidden="true"></span><div><strong id="vpsIdentity">VPS</strong><span id="vpsIdentityStatus">Connected</span></div></div>
+          <button class="sidebar-action" id="reconnectButton" type="button">Reconnect VPS</button>
+        </div>
+      </aside>
+
+      <div class="content-shell">
+        <header class="topbar">
+          <button class="mobile-menu" id="mobileMenu" type="button" aria-label="Open navigation">Menu</button>
+          <div class="crumbs"><span>Tater Tunnel</span><strong id="currentViewLabel">Overview</strong></div>
+          <div class="topbar-actions">
+            <div class="live-state" id="liveState"><span class="live-dot" aria-hidden="true"></span><span id="liveStateText">Checking private path</span></div>
+            <button class="icon-button" id="refreshButton" type="button" title="Refresh status" aria-label="Refresh status">R</button>
+          </div>
+        </header>
+
+        <main>
+          <section class="view is-visible" data-view-panel="overview">
+            <div class="page-heading">
+              <div><p class="eyebrow">VPS control center</p><h1 id="overviewTitle">Checking your tunnel.</h1><p class="page-copy" id="overviewCopy">Reading live status through the private management path.</p></div>
+              <div class="heading-actions"><button class="button button-secondary" data-go="apps" type="button">Manage apps</button><button class="button button-primary" data-go="tunnel" data-open-device type="button">Add device</button></div>
             </div>
-          </div>
-          <div class="hero-art" aria-hidden="true">
-            <img src="assets/tater-mascot-cable-connect.png" alt="">
-          </div>
-        </section>
-
-        <section class="status-strip" aria-label="Tunnel summary">
-          <div>
-            <span>Home Agent</span>
-            <strong id="metricHome">Ready</strong>
-          </div>
-          <div>
-            <span>VPS</span>
-            <strong id="metricVps">Not connected</strong>
-          </div>
-          <div>
-            <span>Devices</span>
-            <strong id="metricDevices">0 approved</strong>
-          </div>
-          <div>
-            <span>Private services</span>
-            <strong id="metricServices">0 shared</strong>
-          </div>
-        </section>
-
-        <div class="notice" id="notice" role="status" hidden></div>
-
-        <section class="workspace-section connection-section" aria-labelledby="connectionTitle">
-          <div class="section-heading">
-            <div>
-              <p class="step-label">Step 1</p>
-              <h2 id="connectionTitle">Connect your VPS</h2>
+            <section class="metric-band" aria-label="VPS resources">
+              <article class="metric"><div class="metric-top"><span>CPU</span><strong id="cpuValue">--</strong></div><div class="meter"><span id="cpuMeter"></span></div><small id="cpuDetail">Waiting for VPS</small></article>
+              <article class="metric"><div class="metric-top"><span>Memory</span><strong id="memoryValue">--</strong></div><div class="meter"><span id="memoryMeter"></span></div><small id="memoryDetail">Waiting for VPS</small></article>
+              <article class="metric"><div class="metric-top"><span>Disk</span><strong id="diskValue">--</strong></div><div class="meter meter-warm"><span id="diskMeter"></span></div><small id="diskDetail">Waiting for VPS</small></article>
+              <article class="metric"><div class="metric-top"><span>Uptime</span><strong id="uptimeValue">--</strong></div><div class="metric-spark" aria-hidden="true"><i style="height:32%"></i><i style="height:46%"></i><i style="height:39%"></i><i style="height:55%"></i><i style="height:50%"></i><i style="height:68%"></i><i style="height:61%"></i><i style="height:73%"></i><i style="height:64%"></i><i style="height:78%"></i></div><small id="uptimeDetail">No live reading yet</small></article>
+            </section>
+            <div class="overview-grid">
+              <section class="panel apps-summary"><div class="panel-heading"><div><p class="panel-kicker">Managed apps</p><h2>Services</h2></div><button class="text-button" data-go="apps" type="button">View all</button></div><div class="service-rows" id="overviewApps"></div></section>
+              <section class="panel tunnel-summary"><div class="panel-heading"><div><p class="panel-kicker">Private network</p><h2>Tunnel health</h2></div><span class="state-badge" id="tunnelBadge">Checking</span></div><div class="tunnel-route"><div class="route-node"><span>H</span><strong>Home</strong><small>10.88.0.2</small></div><div class="route-line"><i></i><span id="tunnelCheckTime">Private</span></div><div class="route-node"><span>V</span><strong>VPS</strong><small>10.88.0.1</small></div></div><div class="traffic-pair"><div><span>UP</span><strong id="uploadValue">0 B</strong><small>Devices sent</small></div><div><span>DN</span><strong id="downloadValue">0 B</strong><small>Devices received</small></div></div></section>
+              <section class="panel activity-panel"><div class="panel-heading"><div><p class="panel-kicker">Approved devices</p><h2>Device activity</h2></div><button class="text-button" data-go="tunnel" type="button">All devices</button></div><div class="device-table" id="overviewDevices"></div></section>
+              <aside class="mascot-callout"><img src="assets/tater-vps-mascot.png" alt="Tater mascot connecting two network cables"><div><p class="panel-kicker">Security</p><h2>Private by default.</h2><p>Management and app consoles stay behind WireGuard. The browser talks only to this Home Agent.</p><button class="text-button" data-go="system" type="button">Open security report</button></div></aside>
             </div>
-            <span class="section-state is-waiting" id="connectionState">Not connected</span>
-          </div>
+          </section>
 
-          <div class="connection-summary" id="connectionSummary" hidden>
-            <div>
-              <span>Private WireGuard path</span>
-              <strong id="connectedVps">VPS</strong>
-              <small id="connectionDetail">Checking the tunnel</small>
+          <section class="view" data-view-panel="apps">
+            <div class="page-heading compact-heading"><div><p class="eyebrow">VPS apps</p><h1>Apps</h1><p class="page-copy">Install and manage allow-listed services without opening a shell.</p></div><button class="button button-secondary" id="checkAppsButton" type="button">Check app health</button></div>
+            <div class="filter-bar"><div class="segmented-control" aria-label="App filters"><button class="is-selected" type="button" data-filter="all">All</button><button type="button" data-filter="installed">Installed</button><button type="button" data-filter="available">Available</button></div><span id="appSummary">Checking apps</span></div>
+            <div class="app-catalog" id="appCatalog"></div>
+          </section>
+
+          <section class="view" data-view-panel="tunnel">
+            <div class="page-heading compact-heading"><div><p class="eyebrow">Private access</p><h1>Tunnel</h1><p class="page-copy">Approve WireGuard devices and publish selected home services to private ports.</p></div><div class="heading-actions"><button class="button button-secondary" id="addServiceButton" type="button">Add service</button><button class="button button-primary" data-open-device type="button">Add device</button></div></div>
+            <form class="inline-control-form" id="deviceForm" hidden><label class="field"><span>Person</span><input id="personName" required></label><label class="field"><span>Device name</span><input id="deviceName" placeholder="My iPhone"></label><label class="field"><span>Type</span><select id="deviceType"><option>Phone</option><option>Tablet</option><option>Laptop</option><option>Desktop</option></select></label><div class="form-buttons"><button class="button button-secondary" type="button" data-cancel-form>Cancel</button><button class="button button-primary" type="submit">Generate QR</button></div></form>
+            <form class="inline-control-form service-control-form" id="serviceForm" hidden><label class="field"><span>Preset</span><select id="servicePreset"><option value="">Custom</option><option value="tater">Tater</option><option value="emby">Emby</option><option value="matrix">Matrix</option></select></label><label class="field"><span>Name</span><input id="serviceName" required></label><label class="field"><span>Local address</span><input id="serviceHost" value="127.0.0.1" required></label><label class="field"><span>Local port</span><input id="servicePort" type="number" min="1" max="65535" required></label><label class="field"><span>Protocol</span><select id="serviceProtocol"><option value="tcp">TCP</option><option value="udp">UDP</option></select></label><label class="field"><span>Private port</span><input id="serviceAccessPort" type="number" min="30000" max="30999" placeholder="Automatic"></label><div class="form-buttons"><button class="button button-secondary" type="button" data-cancel-form>Cancel</button><button class="button button-primary" type="submit">Add service</button></div></form>
+            <div class="split-layout">
+              <section class="panel"><div class="panel-heading"><div><p class="panel-kicker">WireGuard</p><h2>Approved devices</h2></div><span class="state-badge" id="deviceCountBadge">0 approved</span></div><div class="device-table device-table-large" id="deviceList"></div></section>
+              <section class="panel"><div class="panel-heading"><div><p class="panel-kicker">Home Agent</p><h2>Shared services</h2></div></div><div class="route-list" id="routeList"></div></section>
             </div>
-            <button class="secondary-button" id="checkConnectionButton" type="button">Check connection</button>
-          </div>
+            <section class="qr-panel panel" id="qrPanel" hidden><div><p class="panel-kicker">WireGuard enrollment</p><h2 id="qrTitle">New device</h2><p>Scan this code in the WireGuard app, then enable the tunnel.</p></div><canvas id="qrImage"></canvas><details><summary>Show configuration</summary><pre id="qrToken"></pre></details><button class="button button-secondary" id="closeQrButton" type="button">Done</button></section>
+          </section>
 
-          <form class="pair-form" id="pairForm">
-            <label>
-              <span>VPS URL</span>
-              <input id="vpsAddress" name="vpsAddress" type="url" inputmode="url" placeholder="https://tunnel.example.com" autocomplete="url" required>
-            </label>
-            <label>
-              <span>One-time pairing code</span>
-              <input id="pairingCode" name="pairingCode" type="text" placeholder="ABCDE-23456" autocomplete="one-time-code" spellcheck="false" required>
-            </label>
-            <button class="primary-button" type="submit">Connect</button>
-          </form>
+          <section class="view" data-view-panel="updates">
+            <div class="page-heading compact-heading"><div><p class="eyebrow">One place to maintain both sides</p><h1>Updates</h1><p class="page-copy">Installed versions are shown here. Updates remain deliberate and reviewable.</p></div><button class="button button-secondary" id="checkUpdatesButton" type="button">Check again</button></div>
+            <div class="update-lanes"><article class="update-lane"><div class="lane-icon">H</div><div class="lane-title"><span>Home Agent</span><h2>Local computer</h2></div><span class="state-badge is-good">Running</span><div class="version-pair"><span>Installed</span><strong id="homeVersion">--</strong></div></article><article class="update-lane"><div class="lane-icon">V</div><div class="lane-title"><span>VPS Agent</span><h2 id="updateVpsName">VPS</h2></div><span class="state-badge is-good" id="vpsUpdateBadge">Current</span><div class="version-pair"><span>Installed</span><strong id="vpsVersion">--</strong></div></article></div>
+            <section class="release-panel"><div class="release-heading"><div><p class="panel-kicker">Update policy</p><h2>Controlled updates</h2></div></div><div class="release-content"><div><span class="change-mark">+</span><p><strong>Home Agent</strong> The macOS app handles its signed release updates.</p></div><div><span class="change-mark">+</span><p><strong>VPS Agent</strong> Use the setup menu's update action until unattended VPS updates are added here.</p></div><div><span class="change-mark">+</span><p><strong>App configuration</strong> SFTPGo and ZNC changes are available now from the Apps view.</p></div></div></section>
+          </section>
 
-          <details class="connection-settings" id="connectionSettings" hidden>
-            <summary>Connection settings</summary>
-            <p>Reopen pairing on the VPS before connecting again. Reset removes this Home Agent's local tunnel identity.</p>
-            <div class="settings-actions">
-              <button class="ghost-button" id="connectAgainButton" type="button">Connect again</button>
-              <button class="danger-button" id="resetButton" type="button">Reset Home Agent</button>
-            </div>
-          </details>
-        </section>
-
-        <section class="workspace-section" aria-labelledby="devicesTitle">
-          <div class="section-heading">
-            <div>
-              <p class="step-label">Step 2</p>
-              <h2 id="devicesTitle">Approved devices</h2>
-            </div>
-            <button class="secondary-button" id="addDeviceButton" type="button">Add device</button>
-          </div>
-
-          <form class="inline-form device-form" id="deviceForm" hidden>
-            <label>
-              <span>Person</span>
-              <input id="personName" name="person" type="text" placeholder="Spud Lord" required>
-            </label>
-            <label>
-              <span>Device name</span>
-              <input id="deviceName" name="name" type="text" placeholder="My iPhone">
-            </label>
-            <label>
-              <span>Device type</span>
-              <select id="deviceType" name="type">
-                <option>Phone</option>
-                <option>Laptop</option>
-                <option>Tablet</option>
-                <option>Desktop</option>
-              </select>
-            </label>
-            <div class="form-actions">
-              <button class="primary-button" type="submit">Create QR</button>
-              <button class="ghost-button" id="cancelDeviceButton" type="button">Cancel</button>
-            </div>
-          </form>
-
-          <div class="qr-panel" id="qrPanel" hidden>
-            <div class="qr-code"><img id="qrImage" alt="WireGuard enrollment QR code"></div>
-            <div>
-              <p class="step-label">Ready to scan</p>
-              <h3 id="qrTitle">Device configuration</h3>
-              <p>Open WireGuard on the device and scan this code. The configuration is shown once.</p>
-              <code id="qrToken"></code>
-              <button class="ghost-button" id="closeQrButton" type="button">Done</button>
-            </div>
-          </div>
-
-          <div class="empty-state" id="emptyDevices">
-            <strong>No approved devices yet</strong>
-            <span>Add a phone or computer, then scan its WireGuard QR code.</span>
-          </div>
-          <div class="item-list" id="deviceList"></div>
-        </section>
-
-        <section class="workspace-section" aria-labelledby="servicesTitle">
-          <div class="section-heading">
-            <div>
-              <p class="step-label">Step 3</p>
-              <h2 id="servicesTitle">Private services</h2>
-            </div>
-            <button class="secondary-button" id="addServiceButton" type="button">Add service</button>
-          </div>
-          <p class="section-intro">Each service receives a private address on the Home Agent. It is reachable only while the device is connected to Tater Tunnel.</p>
-
-          <form class="inline-form service-form" id="serviceForm" hidden>
-            <label>
-              <span>Preset</span>
-              <select id="servicePreset">
-                <option value="">Custom</option>
-                <option value="tater">Tater</option>
-                <option value="matrix">Matrix</option>
-                <option value="emby">Emby</option>
-              </select>
-            </label>
-            <label>
-              <span>Name</span>
-              <input id="serviceName" type="text" placeholder="tater" required>
-            </label>
-            <label>
-              <span>Local IP or hostname</span>
-              <input id="serviceHost" type="text" value="127.0.0.1" placeholder="10.4.20.204" required>
-            </label>
-            <label>
-              <span>Local port</span>
-              <input id="servicePort" type="number" min="1" max="65535" placeholder="8096" required>
-            </label>
-            <label>
-              <span>Protocol</span>
-              <select id="serviceProtocol">
-                <option value="tcp">TCP</option>
-                <option value="udp">UDP</option>
-              </select>
-            </label>
-            <label>
-              <span>Tunnel port</span>
-              <input id="serviceAccessPort" type="number" min="30000" max="30999" placeholder="Auto">
-            </label>
-            <div class="form-actions">
-              <button class="primary-button" type="submit">Share service</button>
-              <button class="ghost-button" id="cancelServiceButton" type="button">Cancel</button>
-            </div>
-          </form>
-
-          <div class="empty-state" id="emptyServices">
-            <strong>No private services yet</strong>
-            <span>Add only the local apps you want approved devices to reach.</span>
-          </div>
-          <div class="item-list" id="serviceList"></div>
-        </section>
-      </main>
+          <section class="view" data-view-panel="system">
+            <div class="page-heading compact-heading"><div><p class="eyebrow">VPS system</p><h1>System</h1><p class="page-copy">Useful diagnostics without exposing a general-purpose shell.</p></div><button class="button button-secondary" id="auditButton" type="button">Run security audit</button></div>
+            <div class="system-grid"><section class="panel system-facts"><div class="panel-heading"><div><p class="panel-kicker">Host</p><h2>Server details</h2></div></div><dl id="systemFacts"></dl></section><section class="panel audit-list"><div class="panel-heading"><div><p class="panel-kicker">Security</p><h2>Audit</h2></div><span class="state-badge" id="auditBadge">Not run</span></div><div id="auditOutput"><p><span>+</span>Run the audit to verify firewall and private-access boundaries.</p></div></section></div>
+          </section>
+        </main>
+      </div>
     </div>
 
+    <dialog class="app-dialog" id="appDialog">
+      <form id="appManagerForm">
+        <button class="dialog-close" id="closeAppDialog" type="button" aria-label="Close">X</button>
+        <div class="dialog-head"><div class="app-mark app-mark-files" id="dialogAppMark">S</div><div><p class="eyebrow">Install and manage</p><h2 id="dialogTitle">SFTPGo</h2><p>The same guarded settings are used for first installation and later changes.</p></div></div>
+        <div class="app-config" data-config-app="sftpgo">
+          <section class="endpoint-box"><div class="config-section-heading"><div><p class="panel-kicker">Connected through WireGuard</p><h3>Addresses</h3></div><span class="state-badge" id="sftpgoRuntimeBadge">Available</span></div><div class="endpoint-list" id="sftpgoEndpoints"></div></section>
+          <section class="config-section"><div class="config-section-heading"><div><p class="panel-kicker">Runtime and storage</p><h3>SFTPGo service</h3></div></div><div class="settings-grid"><label class="field"><span>Storage cap</span><div class="input-suffix"><input id="sftpgoStorage" type="number" min="1"><span>GiB</span></div></label><div class="setting-note"><strong>Installer-managed storage</strong><small>Existing caps can grow. Shrinking requires migration.</small></div></div></section>
+          <section class="config-section"><div class="config-section-heading"><div><p class="panel-kicker">File access</p><h3>Protocols and exposure</h3></div></div><div class="protocol-list"><article class="protocol-row"><div class="protocol-label"><strong>SFTP</strong><small>Encrypted file transfer</small></div><label class="compact-field"><span>Access</span><select id="sftpAccess"><option value="private">WireGuard only</option><option value="public">Public internet</option><option value="disabled">Disabled</option></select></label><label class="compact-field"><span>Port</span><input value="2022" readonly></label></article><article class="protocol-row"><div class="protocol-label"><strong>FTP</strong><small>Legacy passive-mode transfer</small></div><label class="compact-field"><span>Access</span><select id="ftpAccess"><option value="disabled">Disabled</option><option value="private">WireGuard only</option><option value="public">Public internet</option></select></label><label class="compact-field"><span>Port</span><input value="2121" readonly></label><p class="protocol-note">Public FTP is unencrypted and requires confirmation before it is applied.</p></article><article class="protocol-row"><div class="protocol-label"><strong>WebDAV</strong><small>Finder and compatible clients</small></div><label class="compact-field"><span>Access</span><select id="webdavAccess"><option value="disabled">Disabled</option><option value="private">WireGuard only</option><option value="https">Public HTTPS</option></select></label><label class="compact-field"><span>Local port</span><input value="10080" readonly></label><label class="field protocol-domain" id="webdavDomainField"><span>Dedicated HTTPS hostname</span><input id="webdavDomain" placeholder="files.example.com"></label></article></div></section>
+          <section class="config-section"><div class="config-section-heading"><div><p class="panel-kicker">Optional DNS setup</p><h3>Cloudflare</h3></div></div><div class="settings-grid"><label class="setting-toggle wide"><span><strong>Create or update the DNS record</strong><small>The API token is used once and never saved.</small></span><input id="cloudflareEnabled" type="checkbox"></label><label class="field cloudflare-field"><span>Zone</span><input id="cloudflareZone" placeholder="example.com"></label><label class="field cloudflare-field"><span>API token</span><input id="cloudflareToken" type="password" autocomplete="new-password"></label><label class="field cloudflare-field"><span>VPS public IPv4</span><input id="cloudflareIpv4" placeholder="Auto-detect"></label></div></section>
+        </div>
+        <div class="app-config" data-config-app="znc" hidden>
+          <section class="endpoint-box"><div class="config-section-heading"><div><p class="panel-kicker">Connected through WireGuard</p><h3>Addresses</h3></div><span class="state-badge" id="zncRuntimeBadge">Available</span></div><div class="endpoint-list" id="zncEndpoints"></div></section>
+          <section class="config-section"><div class="config-section-heading"><div><p class="panel-kicker">Runtime</p><h3>ZNC service</h3></div></div><div class="settings-grid"><label class="field"><span>Linux owner</span><input id="zncUser" placeholder="tater"></label><label class="field"><span>Configuration directory</span><input id="zncDataDir" readonly></label><label class="field"><span>IRC listener port</span><input id="zncIrcPort" type="number" min="1" max="65535"></label><label class="field"><span>WebAdmin port</span><input id="zncWebPort" type="number" min="1" max="65535"></label></div></section>
+          <section class="config-section" id="zncInitialAdmin"><div class="config-section-heading"><div><p class="panel-kicker">First installation</p><h3>Initial administrator</h3></div></div><div class="settings-grid"><label class="field"><span>Administrator</span><input id="zncAdminUser"></label><label class="field"><span>Administrator password</span><input id="zncAdminPassword" type="password" minlength="12" autocomplete="new-password"></label></div></section>
+          <section class="config-section"><div class="boundary-list"><div><span class="boundary-icon">OK</span><p><strong>IRC stays private</strong><small>The listener is available through Tater WireGuard only.</small></p><span class="state-badge is-good">Locked</span></div><div><span class="boundary-icon">OK</span><p><strong>WebAdmin stays private</strong><small>The web listener is blocked from the public internet.</small></p><span class="state-badge is-good">Locked</span></div></div></section>
+        </div>
+        <section class="job-panel" id="jobPanel" hidden><div class="job-spinner" aria-hidden="true"></div><div><strong id="jobTitle">Applying changes</strong><p id="jobMessage">The VPS is working. You can keep this window open.</p></div></section>
+        <div class="dialog-actions"><button class="button button-danger" id="disableAppButton" type="button">Disable app</button><div><button class="button button-secondary" id="cancelAppChanges" type="button">Cancel</button><button class="button button-primary" id="saveAppChanges" type="submit">Apply changes</button></div></div>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="qr.js"></script>
     <script src="app.js"></script>
   </body>

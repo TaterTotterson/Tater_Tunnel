@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
+from . import __version__
 from .access_forward import (
     ACCESS_BIND_ADDRESS,
     ACCESS_PORT_MAX,
@@ -207,6 +208,32 @@ class HomeAgentService:
             self.access_routes(state)
         )
         return self._with_state(self.store.save(state))
+
+    def control_overview(self) -> dict[str, Any]:
+        state = self.store.load()
+        self._require_paired_for_control(state)
+        return self.vps_client.control_overview(
+            self._management_url(state), self._management_token(state)
+        )
+
+    def start_control_job(self, payload: dict[str, Any]) -> dict[str, Any]:
+        state = self.store.load()
+        self._require_paired_for_control(state)
+        return self.vps_client.start_control_job(
+            self._management_url(state), payload, self._management_token(state)
+        )
+
+    def control_job(self, job_id: str) -> dict[str, Any]:
+        state = self.store.load()
+        self._require_paired_for_control(state)
+        return self.vps_client.control_job(
+            self._management_url(state), job_id, self._management_token(state)
+        )
+
+    @staticmethod
+    def _require_paired_for_control(state: dict[str, Any]) -> None:
+        if not state.get("paired"):
+            raise AgentError(HTTPStatus.CONFLICT, "Connect a VPS before managing it")
 
     def wireguard_diagnostics(self) -> dict[str, Any]:
         state = self.store.load()
@@ -525,6 +552,7 @@ class HomeAgentService:
         if isinstance(management, dict):
             management.pop("token", None)
         public["endpoint"] = self._endpoint(public)
+        public["version"] = __version__
         public["accessAddress"] = ACCESS_BIND_ADDRESS
         public["accessPortRange"] = [ACCESS_PORT_MIN, ACCESS_PORT_MAX]
         for device in public.get("devices", []):
@@ -583,6 +611,36 @@ class VpsAgentClient:
             f"/api/peers/{peer_id}",
             headers=management_headers(token),
             timeout=VPS_MUTATION_TIMEOUT_SECONDS,
+        )
+
+    def control_overview(self, base_url: str, token: str) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            base_url,
+            "/api/control/overview",
+            headers=management_headers(token),
+            timeout=10,
+        )
+
+    def start_control_job(
+        self, base_url: str, payload: dict[str, Any], token: str
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            base_url,
+            "/api/control/jobs",
+            payload,
+            management_headers(token),
+            timeout=10,
+        )
+
+    def control_job(self, base_url: str, job_id: str, token: str) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            base_url,
+            f"/api/control/jobs/{job_id}",
+            headers=management_headers(token),
+            timeout=10,
         )
 
     def _request(
@@ -663,17 +721,31 @@ class HomeAgentHandler(BaseHTTPRequestHandler):
         if not self._require_local_request():
             return
         path = urlparse(self.path).path
-        if path == "/api/state":
-            self._send_json(self.server.service.state())
-        elif path == "/api/wireguard":
-            self._send_json(self.server.service.wireguard_diagnostics())
-        else:
-            self._serve_static(path)
+        if path.startswith("/api/control/") and not self._require_loopback_control():
+            return
+        try:
+            if path == "/api/state":
+                self._send_json(self.server.service.state())
+            elif path == "/api/wireguard":
+                self._send_json(self.server.service.wireguard_diagnostics())
+            elif path == "/api/control/overview":
+                self._send_json(self.server.service.control_overview())
+            elif path.startswith("/api/control/jobs/"):
+                job_id = unquote(path.removeprefix("/api/control/jobs/"))
+                self._send_json(self.server.service.control_job(job_id))
+            else:
+                self._serve_static(path)
+        except AgentError as error:
+            self._send_error(error.status, error.message)
+        except Exception as error:
+            self._send_unexpected_error(error)
 
     def do_POST(self) -> None:
         if not self._require_local_request():
             return
         path = urlparse(self.path).path
+        if path.startswith("/api/control/") and not self._require_loopback_control():
+            return
         try:
             payload = self._read_json()
             if path == "/api/pair":
@@ -688,6 +760,10 @@ class HomeAgentHandler(BaseHTTPRequestHandler):
                 self._send_json(self.server.service.test_access_route(payload))
             elif path == "/api/reset":
                 self._send_json(self.server.service.reset())
+            elif path == "/api/control/jobs":
+                self._send_json(
+                    self.server.service.start_control_job(payload), HTTPStatus.ACCEPTED
+                )
             else:
                 self._send_error(HTTPStatus.NOT_FOUND, "Endpoint not found")
         except AgentError as error:
@@ -745,6 +821,19 @@ class HomeAgentHandler(BaseHTTPRequestHandler):
             return False
         if not is_allowed_home_agent_host(self.headers.get("Host", "")):
             self._send_error(HTTPStatus.MISDIRECTED_REQUEST, "Home Agent is only available on the local network")
+            return False
+        return True
+
+    def _require_loopback_control(self) -> bool:
+        try:
+            address = ipaddress.ip_address(str(self.client_address[0] or ""))
+        except ValueError:
+            address = None
+        if not address or not address.is_loopback:
+            self._send_error(
+                HTTPStatus.FORBIDDEN,
+                "VPS app controls are available only on the Home Agent computer",
+            )
             return False
         return True
 

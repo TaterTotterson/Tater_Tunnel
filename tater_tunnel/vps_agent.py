@@ -21,6 +21,7 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 from . import __version__
+from .control_helper import ControlHelperClient, ControlHelperClientError, DEFAULT_SOCKET_PATH
 from .wireguard import KeyPair, WireGuardKeyProvider
 from .wireguard_runtime import WIREGUARD_MTU, WireGuardRuntimeError, build_wireguard_runtime
 
@@ -34,6 +35,9 @@ PAIRING_FAILURE_WINDOW_SECONDS = 5 * 60
 MAX_TRACKED_PAIRING_ADDRESSES = 1024
 REQUEST_SOCKET_TIMEOUT_SECONDS = 30
 WIREGUARD_DIAGNOSTICS_WAIT_SECONDS = 1.5
+CONTROL_JOB_HISTORY_LIMIT = 50
+CONTROL_ACTIVE_JOB_LIMIT = 1
+CONTROL_JOB_TIMEOUT_SECONDS = 30 * 60
 HOME_AGENT_ADDRESS = ipaddress.ip_address("10.88.0.2")
 LANDING_MASCOT_PATH = PROJECT_ROOT / "assets" / "tater-vps-mascot.png"
 LANDING_PAGE_HTML = """<!doctype html>
@@ -210,6 +214,106 @@ class VpsConfigStore:
         return merged
 
 
+class VpsControlJobs:
+    ALLOWED_OPERATIONS = {"configure-app", "service-action", "security-audit"}
+
+    def __init__(self, client: ControlHelperClient):
+        self.client = client
+        self._jobs: dict[str, dict[str, Any]] = {}
+        self._lock = threading.Lock()
+
+    def snapshot(self) -> dict[str, Any]:
+        try:
+            return self.client.request("snapshot", timeout=10)
+        except ControlHelperClientError as error:
+            raise VpsAgentError(HTTPStatus.SERVICE_UNAVAILABLE, str(error)) from error
+
+    def start(self, payload: dict[str, Any]) -> dict[str, Any]:
+        operation = str(payload.get("operation") or "").strip()
+        operation_payload = payload.get("payload") or {}
+        if operation not in self.ALLOWED_OPERATIONS:
+            raise VpsAgentError(HTTPStatus.BAD_REQUEST, "Control operation is not allowed")
+        if not isinstance(operation_payload, dict):
+            raise VpsAgentError(HTTPStatus.BAD_REQUEST, "Control job payload must be an object")
+
+        job_id = secrets.token_urlsafe(18)
+        job = {
+            "id": job_id,
+            "operation": operation,
+            "status": "queued",
+            "createdAt": utc_now(),
+            "startedAt": "",
+            "finishedAt": "",
+            "result": None,
+            "error": "",
+        }
+        with self._lock:
+            active = sum(
+                value.get("status") in {"queued", "running"}
+                for value in self._jobs.values()
+            )
+            if active >= CONTROL_ACTIVE_JOB_LIMIT:
+                raise VpsAgentError(
+                    HTTPStatus.CONFLICT,
+                    "Another VPS control job is already running",
+                )
+            self._jobs[job_id] = job
+            self._trim_history()
+        threading.Thread(
+            target=self._run,
+            args=(job_id, operation, deepcopy(operation_payload)),
+            name=f"tater-control-{operation}",
+            daemon=True,
+        ).start()
+        return self.get(job_id)
+
+    def get(self, job_id: str) -> dict[str, Any]:
+        with self._lock:
+            job = deepcopy(self._jobs.get(job_id))
+        if not job:
+            raise VpsAgentError(HTTPStatus.NOT_FOUND, "Control job was not found")
+        return job
+
+    def _run(self, job_id: str, operation: str, payload: dict[str, Any]) -> None:
+        self._update(job_id, status="running", startedAt=utc_now())
+        try:
+            result = self.client.request(
+                operation, payload, timeout=CONTROL_JOB_TIMEOUT_SECONDS
+            )
+        except ControlHelperClientError as error:
+            self._update(job_id, status="failed", error=str(error), finishedAt=utc_now())
+        except Exception:
+            self._update(
+                job_id,
+                status="failed",
+                error="VPS control operation failed unexpectedly",
+                finishedAt=utc_now(),
+            )
+        else:
+            self._update(job_id, status="complete", result=result, finishedAt=utc_now())
+        finally:
+            payload.clear()
+
+    def _update(self, job_id: str, **changes: Any) -> None:
+        with self._lock:
+            if job_id in self._jobs:
+                self._jobs[job_id].update(changes)
+
+    def _trim_history(self) -> None:
+        while len(self._jobs) > CONTROL_JOB_HISTORY_LIMIT:
+            removable = next(
+                (
+                    key
+                    for key, value in self._jobs.items()
+                    if value.get("status") in {"complete", "failed"}
+                ),
+                None,
+            )
+            if not removable:
+                break
+            self._jobs.pop(removable, None)
+
+
 class VpsAgentService:
     def __init__(
         self,
@@ -217,6 +321,7 @@ class VpsAgentService:
         key_provider: WireGuardKeyProvider | None = None,
         wireguard_runtime: Any | None = None,
         management_port: int = 4174,
+        control_jobs: VpsControlJobs | None = None,
     ):
         self.store = store
         self.key_provider = key_provider or WireGuardKeyProvider()
@@ -224,6 +329,7 @@ class VpsAgentService:
             "config", WIREGUARD_CONFIG_PATH, "tater0"
         )
         self.management_port = management_port
+        self.control_jobs = control_jobs or VpsControlJobs(ControlHelperClient())
         self._pairing_failures: dict[str, list[float]] = {}
         self._pairing_failure_lock = threading.Lock()
         self._state_lock = threading.RLock()
@@ -246,6 +352,15 @@ class VpsAgentService:
             "pairingEnabled": state["pairing"]["enabled"],
             "peerCount": len(state["peers"]),
         }
+
+    def control_overview(self) -> dict[str, Any]:
+        return self.control_jobs.snapshot()
+
+    def start_control_job(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {"job": self.control_jobs.start(payload)}
+
+    def control_job(self, job_id: str) -> dict[str, Any]:
+        return {"job": self.control_jobs.get(job_id)}
 
     def wireguard_diagnostics(self) -> dict[str, Any]:
         state = self.store.load()
@@ -537,14 +652,20 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
                 self._send_landing_page()
             elif path == "/assets/tater-vps-mascot.png":
                 self._send_static_png(LANDING_MASCOT_PATH)
-            elif path in {"/api/health", "/api/state", "/api/wireguard"}:
+            elif path in {"/api/health", "/api/state", "/api/wireguard", "/api/control/overview"}:
                 self._require_management()
                 if path == "/api/health":
                     self._send_json(self.server.service.health())
                 elif path == "/api/state":
                     self._send_json(self.server.service.state())
-                else:
+                elif path == "/api/wireguard":
                     self._send_json(self.server.service.wireguard_diagnostics())
+                else:
+                    self._send_json(self.server.service.control_overview())
+            elif path.startswith("/api/control/jobs/"):
+                self._require_management()
+                job_id = unquote(path.removeprefix("/api/control/jobs/"))
+                self._send_json(self.server.service.control_job(job_id))
             else:
                 self._send_error(HTTPStatus.NOT_FOUND, "Endpoint not found")
         except VpsAgentError as error:
@@ -564,7 +685,7 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         path = urlparse(self.path).path
         try:
-            if path not in {"/api/claim", "/api/peers", "/api/reset"}:
+            if path not in {"/api/claim", "/api/peers", "/api/reset", "/api/control/jobs"}:
                 self._send_error(HTTPStatus.NOT_FOUND, "Endpoint not found")
                 return
             if path != "/api/claim":
@@ -574,8 +695,12 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
                 self._send_json(self.server.service.claim(payload, self.client_address[0]))
             elif path == "/api/peers":
                 self._send_json(self.server.service.add_peer(payload), HTTPStatus.CREATED)
-            else:
+            elif path == "/api/reset":
                 self._send_json(self.server.service.reset())
+            else:
+                self._send_json(
+                    self.server.service.start_control_job(payload), HTTPStatus.ACCEPTED
+                )
         except VpsAgentError as error:
             self._send_error(error.status, error.message)
         except json.JSONDecodeError:
@@ -740,10 +865,17 @@ def build_server(
     wireguard_backend: str = "config",
     wireguard_config: Path = WIREGUARD_CONFIG_PATH,
     wireguard_interface: str = "tater0",
+    control_socket: Path = DEFAULT_SOCKET_PATH,
 ) -> VpsAgentServer:
     store = VpsConfigStore(state_file, pairing_code)
     runtime = build_wireguard_runtime(wireguard_backend, wireguard_config, wireguard_interface)
-    service = VpsAgentService(store, wireguard_runtime=runtime, management_port=port)
+    control_jobs = VpsControlJobs(ControlHelperClient(control_socket))
+    service = VpsAgentService(
+        store,
+        wireguard_runtime=runtime,
+        management_port=port,
+        control_jobs=control_jobs,
+    )
     return VpsAgentServer((host, port), service)
 
 
@@ -762,6 +894,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--wireguard-backend", choices=["config", "wg", "system"], default="config")
     parser.add_argument("--wireguard-config", default=WIREGUARD_CONFIG_PATH, type=Path)
     parser.add_argument("--wireguard-interface", default="tater0")
+    parser.add_argument("--control-socket", default=DEFAULT_SOCKET_PATH, type=Path)
     args = parser.parse_args(argv)
 
     if args.pairing_code and args.pairing_code_file:
@@ -791,6 +924,7 @@ def main(argv: list[str] | None = None) -> int:
         args.wireguard_backend,
         args.wireguard_config,
         args.wireguard_interface,
+        args.control_socket,
     )
     state = server.service.state()
     print(f"Tater Tunnel VPS Agent listening on http://{args.host}:{args.port}")

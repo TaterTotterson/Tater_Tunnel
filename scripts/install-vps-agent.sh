@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 SERVICE_NAME="tater-tunnel-vps"
+CONTROL_SERVICE_NAME="tater-tunnel-control"
 SERVICE_USER="tater-tunnel"
 INSTALL_DIR="/opt/tater-tunnel"
 STATE_DIR="/var/lib/tater-tunnel"
@@ -9,6 +10,7 @@ CONFIG_DIR="/etc/tater-tunnel"
 LISTEN_HOST="127.0.0.1"
 LISTEN_PORT="4174"
 WIREGUARD_INTERFACE="tater0"
+CONTROL_SOCKET="/run/tater-tunnel-control/control.sock"
 PAIRING_CODE=""
 SKIP_PACKAGES="0"
 START_SERVICE="1"
@@ -199,23 +201,58 @@ write_service() {
   local wireguard_config="$CONFIG_DIR/wireguard/$WIREGUARD_INTERFACE.conf"
   local service_file="/etc/systemd/system/$SERVICE_NAME.service"
   local service_host="$LISTEN_HOST"
+  local control_service_file="/etc/systemd/system/$CONTROL_SERVICE_NAME.service"
 
   if [ "$WIREGUARD_MANAGEMENT_ACCESS" = "1" ] && [ "$service_host" = "127.0.0.1" ]; then
     service_host="0.0.0.0"
   fi
 
+  cat > "$control_service_file" <<EOF
+[Unit]
+Description=Tater Tunnel privileged control helper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=$SERVICE_USER
+WorkingDirectory=$INSTALL_DIR
+RuntimeDirectory=tater-tunnel-control
+RuntimeDirectoryMode=0750
+ExecStart=$python_bin -B -m tater_tunnel.control_helper --socket $CONTROL_SOCKET --install-dir $INSTALL_DIR --allowed-user $SERVICE_USER
+Restart=on-failure
+RestartSec=3
+UMask=0007
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
   cat > "$service_file" <<EOF
 [Unit]
 Description=Tater Tunnel VPS Agent
-After=network-online.target
+After=network-online.target $CONTROL_SERVICE_NAME.service
 Wants=network-online.target
+Requires=$CONTROL_SERVICE_NAME.service
 
 [Service]
 Type=simple
 User=$SERVICE_USER
 Group=$SERVICE_USER
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$python_bin -B -m tater_tunnel.vps_agent --host $service_host --port $LISTEN_PORT --state-file $state_file --pairing-code-file $pairing_file --wireguard-backend system --wireguard-config $wireguard_config --wireguard-interface $WIREGUARD_INTERFACE
+ExecStart=$python_bin -B -m tater_tunnel.vps_agent --host $service_host --port $LISTEN_PORT --state-file $state_file --pairing-code-file $pairing_file --wireguard-backend system --wireguard-config $wireguard_config --wireguard-interface $WIREGUARD_INTERFACE --control-socket $CONTROL_SOCKET
 Restart=on-failure
 RestartSec=3
 UMask=0077
@@ -246,8 +283,10 @@ WantedBy=multi-user.target
 EOF
 
   systemctl daemon-reload
+  systemctl enable "$CONTROL_SERVICE_NAME" >/dev/null
   systemctl enable "$SERVICE_NAME" >/dev/null
   if [ "$START_SERVICE" = "1" ]; then
+    systemctl restart "$CONTROL_SERVICE_NAME"
     systemctl restart "$SERVICE_NAME"
   fi
 }
@@ -284,6 +323,9 @@ Tater Tunnel VPS Agent installed.
 Service:
   sudo systemctl status $SERVICE_NAME
   sudo journalctl -u $SERVICE_NAME -f
+
+Control helper:
+  sudo systemctl status $CONTROL_SERVICE_NAME
 
 Local agent URL:
   http://$service_host:$LISTEN_PORT

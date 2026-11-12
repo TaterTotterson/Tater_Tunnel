@@ -1,35 +1,40 @@
-# Tater Tunnel v0.2.12
+# Tater Tunnel v0.3.0
 
-This release makes the VPS setup console easier to operate and turns ZNC and
-SFTPGo into guided, securely bounded optional services.
+This release turns the Home Agent into a private control center for the tunnel,
+its VPS, connected devices, services, and optional apps.
 
-## Guided optional services
+## Control Center
 
-- SFTPGo setup now offers SFTP, FTP, WebDAV, or any combination and applies the
-  selected listeners automatically.
-- SFTP and FTP can remain WireGuard-only or be deliberately opened for public
-  clients. External WebDAV uses a dedicated Caddy hostname with automatic HTTPS.
-- Cloudflare DNS-only records can be created from a one-time masked API-token
-  prompt; the token is not saved.
-- Existing managed SFTPGo storage caps are detected and preserved during
-  updates, and setup verifies every requested listener before reporting success.
-- First-time ZNC setup now asks only for an administrator login and creates the
-  private IRC listener, private WebAdmin listener, hashed password, systemd
-  service, and firewall rules automatically.
-- Existing ZNC users and networks are preserved while managed listeners are
-  reconciled, and credential entry now moves cleanly into the review screen.
+- A redesigned dashboard shows tunnel health, VPS CPU, memory, storage,
+  uptime, connected devices, service routes, and installed apps at a glance.
+- SFTPGo and ZNC can be installed, configured, updated, restarted, or removed
+  from guided app-management screens.
+- SFTPGo controls cover SFTP, FTP, WebDAV, public or WireGuard-only access,
+  storage limits, WebDAV HTTPS, and optional Cloudflare DNS setup.
+- ZNC controls cover private IRC and WebAdmin listeners, administrator setup,
+  service health, and WireGuard connection details.
+- Installed apps show their private WireGuard addresses with one-click copy
+  controls.
+- Devices, service routes, software updates, and security checks now live in
+  dedicated views with clearer status and actions.
 
-## Setup and security
+## Secure Management
 
-- The full-screen VPS console uses a black and amber Tater theme, keeps progress
-  output visible, and returns completed or failed actions to the main menu.
-- SFTPGo and ZNC firewall rules are reconciled on every setup run, including
-  removal of stale access for protocols that have been disabled.
-- The guided security audit can repair managed firewall boundaries before
-  checking them and recognizes UFW's normalized deny-rule output.
-- Optional-service administration remains private to Tater Tunnel WireGuard,
-  while explicitly selected public file-transfer listeners keep their own exact
-  firewall boundaries.
-- SSH setup documentation now uses the standard `ssh-copy-id USER@SERVER` flow
-  and provides the commands for disabling password and root login after key
-  access has been verified.
+- VPS administration uses a new root-owned, allowlisted control helper over a
+  local Unix socket; the unprivileged VPS Agent cannot execute arbitrary shell
+  commands.
+- Control requests continue through the private Home Agent WireGuard path and
+  require the existing management token.
+- The Home Agent accepts control operations only from the local machine, even
+  when its web interface listens on a LAN address.
+- App changes run as tracked jobs with bounded actions, concise logs, and no
+  submitted secrets retained in job history.
+- Cloudflare tokens are passed only to the requested operation, while temporary
+  ZNC credentials use short-lived root-only files.
+
+## Setup
+
+- New VPS installs include and start the control helper automatically.
+- Existing installations can gain Control Center management by running the VPS
+  installer update path once.
+- Uninstall now removes the helper service and its managed runtime files.

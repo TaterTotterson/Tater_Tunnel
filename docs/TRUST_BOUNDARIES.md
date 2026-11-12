@@ -36,6 +36,26 @@ VPS management is available at `10.88.0.1:4174` only when both controls pass:
 The token and Home Agent private key are stored in state files with mode
 `0600`. They are removed from API responses shown to the browser.
 
+### VPS Control Helper
+
+The browser never contacts a privileged VPS process. It talks to the local
+Home Agent, which forwards authenticated requests through WireGuard to the
+unprivileged VPS Agent. The VPS Agent validates the source address and
+management token before accepting a control request.
+
+The Home Agent accepts `/api/control/*` only from loopback, even when an
+operator has deliberately bound other Home Agent views to a LAN address.
+
+Privileged app and audit work is delegated over a mode-`0660` Unix socket to
+`tater-tunnel-control`. The helper accepts only typed operations for SFTPGo,
+ZNC, service state, and the security audit. It builds argument arrays for
+root-owned installer scripts and never accepts shell text or arbitrary command
+names. Only one mutation job may run at a time.
+
+ZNC passwords use a short-lived root-only file under `/run`. Cloudflare tokens
+exist only in the child process environment for the DNS request. Neither is
+stored in VPS Agent job history.
+
 ### Remote Device WireGuard
 
 Each approved remote device receives a unique key and exact `/32` tunnel
