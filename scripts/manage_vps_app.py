@@ -10,6 +10,7 @@ import re
 import secrets
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -272,6 +273,33 @@ def hash_ntfy_password(image: str, password: str) -> str:
     return match.group(0)
 
 
+def prepare_uptime_data(state_dir: Path) -> Path:
+    data_dir = state_dir / "data"
+    if state_dir.is_symlink() or data_dir.is_symlink():
+        raise ManagedAppError("Uptime Kuma storage must not be a symlink")
+    data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    device = data_dir.stat().st_dev
+    # Kuma starts as root, but its embedded MariaDB runs as node (1000:1000).
+    # Directory descriptors keep ownership repairs from following data symlinks.
+    for _directory, directories, files, descriptor in os.fwalk(data_dir, follow_symlinks=False):
+        if os.fstat(descriptor).st_dev != device:
+            raise ManagedAppError("Unmount external Kuma storage before repairing ownership")
+        for name in directories + files:
+            try:
+                entry = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                if stat.S_ISLNK(entry.st_mode):
+                    continue
+                if entry.st_dev != device:
+                    raise ManagedAppError("Unmount external Kuma storage before repairing ownership")
+                os.chown(name, 1000, 1000, dir_fd=descriptor, follow_symlinks=False)
+            except FileNotFoundError:
+                # A running database may remove temporary files before restart.
+                continue
+        os.fchown(descriptor, 1000, 1000)
+    data_dir.chmod(0o700)
+    return data_dir
+
+
 def build_uptime(
     request: dict[str, Any], existing: dict[str, Any], config_dir: Path, state_dir: Path
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -283,8 +311,7 @@ def build_uptime(
         raise ManagedAppError(
             "Install Uptime Kuma with WireGuard-only access first, create its administrator, then enable public HTTPS"
         )
-    data_dir = state_dir / "data"
-    data_dir.mkdir(parents=True, exist_ok=True)
+    data_dir = prepare_uptime_data(state_dir)
     service = base_service(
         definition["image"],
         definition["container"],
@@ -811,6 +838,8 @@ def action(app: str, requested_action: str, *, delete_data: bool = False) -> Non
     if delete_data:
         for path, parent in ((STATE_ROOT / app, STATE_ROOT), (CONFIG_ROOT / app, CONFIG_ROOT)):
             validate_app_directory(path, parent)
+    if app == "uptime-kuma" and requested_action in {"start", "restart"}:
+        prepare_uptime_data(STATE_ROOT / app)
     if requested_action == "start":
         enable_app_service(app, compose_path)
         compose(app, compose_path, "up", "-d")

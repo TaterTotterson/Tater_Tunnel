@@ -224,8 +224,8 @@ RuntimeDirectory=tater-tunnel-control
 RuntimeDirectoryMode=0750
 LogsDirectory=tater-tunnel-control
 LogsDirectoryMode=0700
-StateDirectory=tater-tunnel-control
-StateDirectoryMode=0700
+# Persistent app storage has per-container owners, prepared by the installer.
+# StateDirectory would recursively replace those owners when its group changes.
 ExecStart=$python_bin -B -m tater_tunnel.control_helper --socket $CONTROL_SOCKET --install-dir $INSTALL_DIR --allowed-user $SERVICE_USER
 Restart=on-failure
 RestartSec=3

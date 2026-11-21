@@ -1,34 +1,39 @@
-# Tater Tunnel v0.5.3
+# Tater Tunnel v0.5.4
 
-Fixes private connections to managed Docker apps that appeared to be running
-but could not load through WireGuard.
+Fixes Kuma database ownership and prevents VPS updates from resetting
+container data permissions.
 
-## Private App Connectivity
+## Database Permissions
 
-- Correct the container firewall so it permits reply packets returning through
-  Docker's bridge while still blocking incoming connections outside WireGuard.
-- Apply the shared fix to Uptime Kuma, ntfy, Forgejo, and Matrix. SFTPGo and ZNC
-  run natively and are not affected by this Docker firewall issue.
-- Refresh existing container firewall rules atomically during VPS updates,
-  without restarting Docker to apply the rule change. The corrected guard is
-  restored at boot and on Docker restart.
-- Update the security audit to reject the old rule that blocked legitimate
-  replies.
+- Stop systemd from recursively assigning the control helper's owner/group to
+  persistent app storage. Container data keeps its app-specific ownership
+  through VPS updates and control-helper restarts.
+- Prepare Kuma data for its embedded database user, `1000:1000`, during
+  installation. Enable and restart also repair existing data ownership.
+- Keep the data directory private, skip symlinks, reject storage on another
+  filesystem, and tolerate temporary files disappearing during repair.
+- Do not reset databases or switch database types automatically.
+- Document backup-first recovery for embedded MariaDB setups that were
+  interrupted before their internal system tables were created.
 
-## Updating
+## Updating And Testing
 
-- Install the VPS Agent update from Control Center's **Updates** view, or run
-  the VPS setup script and choose **Update Tater Tunnel**.
-- No managed app reinstall, data deletion, re-pairing, or Home Agent update is
-  required for this fix. The update also replaces any temporary reply-allow
-  rule used to restore access while troubleshooting.
-- The macOS app, Docker image, and signed VPS archive share the v0.5.3 tag.
+- Update the VPS Agent from Control Center's **Updates** view first. No Home
+  Agent update or re-pairing is required for these server-side fixes.
+- An existing incomplete MariaDB setup still needs the documented recovery
+  procedure or a clean reinstall. Ownership repair alone cannot create its
+  missing system tables.
+- For a disposable clean-install test, uninstall Kuma and explicitly choose
+  **Delete data**, then reinstall. Keeping data also keeps the incomplete
+  database. Do not choose deletion for data you need to retain.
+- The macOS app, Docker image, and signed VPS archive share the v0.5.4 tag.
 
 ## Verification
 
-- All 100 local regression tests pass, including firewall, audit, and updater
-  checks.
-- Isolated packet-flow tests reproduced the old timeout, verified HTTP 200
-  through the corrected guard, and confirmed off-tunnel access remains blocked.
-- Tested the actual guard script twice to verify rules can be reapplied.
-- Confirmed Kuma access was restored on the live VPS with the temporary rule.
+- All 106 local regression tests pass.
+- Isolated container tests verified fresh SQLite and embedded MariaDB setup,
+  recovery after an ownership reset, and repeated repair/restart behavior.
+- Reproduced missing MariaDB system tables, verified backup-first
+  initialization restored the setup page, and checked the retained data and
+  backup contents.
+- No live VPS data was removed during verification.

@@ -73,6 +73,12 @@ Privileged app configuration and updater state live under root-owned
 `/etc/tater-tunnel-control` and `/var/lib/tater-tunnel-control`, outside the
 unprivileged VPS Agent's writable directories. The release private key is held
 in the GitHub Actions signing secret, never in the repository or VPS package.
+The installer manages the persistent control-state directory without systemd
+`StateDirectory=`, which could recursively overwrite container data ownership
+when the helper's group differs. Container data keeps its app-specific owner
+under root-only parent directories. Kuma install, enable, and restart repair
+its data ownership for the embedded database user without following symlinks
+or replacing database contents.
 
 ZNC passwords use a short-lived root-only file under `/run`. Cloudflare tokens
 exist only in the child process environment for the DNS request. Neither is

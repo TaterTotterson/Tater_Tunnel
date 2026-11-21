@@ -311,6 +311,51 @@ installed automatically, so reliable voice and video relay requires a separate
 future configuration. Disabling a managed app stops its containers and removes
 its public Caddy route and app-specific firewall access while retaining data.
 
+### Uptime Kuma Database Recovery
+
+If the container is running but the page does not load, inspect its logs:
+
+```bash
+sudo docker logs --tail 100 tater-uptime-kuma
+```
+
+Permission errors in `/app/data/mariadb` require restoring ownership to the
+container's database user, `1000:1000`. Current install, enable, and restart
+handling repairs that ownership. VPS updates preserve container data owners.
+
+If permission errors are gone but startup still reports missing `mysql.db`,
+`mysql.servers`, or `mysql.plugin`, the embedded database's system-table setup
+may not have completed. Do not delete its data or switch database types. For
+this incomplete embedded MariaDB setup, the following stops Kuma, backs up its
+data under `/root`, and runs MariaDB's initializer using the installed image.
+The temporary container has no network access and publishes no ports.
+
+```bash
+sudo bash <<'SH'
+set -euo pipefail
+umask 077
+container=tater-uptime-kuma
+state=/var/lib/tater-tunnel-control/apps/uptime-kuma
+image="$(docker inspect --format '{{.Image}}' "$container")"
+docker stop "$container"
+backup="$(mktemp -d /root/tater-kuma-repair.XXXXXX)"
+tar -C "$state" -czf "$backup/data.tar.gz" data
+printf 'Backup saved: %s/data.tar.gz\n' "$backup"
+chown -R -P --no-dereference 1000:1000 "$state/data"
+docker run --rm --network none --security-opt no-new-privileges:true \
+  --volumes-from "$container" --entrypoint mariadb-install-db "$image" \
+  --user=node --auth-root-socket-user=node \
+  --datadir=/app/data/mariadb --auth-root-authentication-method=socket \
+  --skip-test-db
+docker start "$container"
+SH
+```
+
+The block stops on failure and leaves the backup in place. If the initializer
+reports that system tables already exist, or Kuma still fails to start, inspect
+the fresh logs rather than deleting files or forcing database upgrades. After
+a successful start, connect WireGuard and reopen `http://10.88.0.1:3001`.
+
 ## Optional ZNC
 
 The menu can install ZNC for the selected sudo user. Its config remains under

@@ -1,1 +1,1 @@
-Fixes private WireGuard connections to Uptime Kuma, ntfy, Forgejo, and Matrix. Update the VPS Agent from Control Center to apply the persistent firewall fix; no app reinstall or re-pairing is needed.
+Fixes Kuma database ownership and preserves container data permissions during VPS updates. Update the VPS Agent to apply the fix. Existing incomplete MariaDB setups require the documented backup-first recovery or a confirmed clean reinstall.
