@@ -9,8 +9,10 @@ import re
 import shutil
 import socket
 import socketserver
+import sqlite3
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -18,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .security import BoundedRequests, SecurityHistory
 
 
 DEFAULT_SOCKET_PATH = Path("/run/tater-tunnel-control/control.sock")
@@ -30,8 +33,25 @@ SFTPGO_ENV_PATH = Path("/etc/sftpgo/env.d/tater-tunnel.env")
 SFTPGO_STORAGE_IMAGE = Path("/var/lib/sftpgo-storage/tater-data.img")
 SFTPGO_STORAGE_ROOT = Path("/srv/sftpgo/data")
 ZNC_UNIT_DIR = Path("/etc/systemd/system")
-UPDATE_STATUS_PATH = Path("/var/lib/tater-tunnel/update-status.json")
+UPDATE_STATUS_PATH = Path("/var/lib/tater-tunnel-control/update-status.json")
+MANAGED_APP_CONFIG_ROOT = Path("/etc/tater-tunnel-control/apps")
+MANAGED_APP_STATE_ROOT = Path("/var/lib/tater-tunnel-control/apps")
 WIREGUARD_HOST = "10.88.0.1"
+CONTAINER_APPS = {"uptime-kuma", "ntfy", "forgejo", "matrix"}
+APP_NAMES = {
+    "sftpgo": "SFTPGo",
+    "znc": "ZNC",
+    "uptime-kuma": "Uptime Kuma",
+    "ntfy": "ntfy",
+    "forgejo": "Forgejo",
+    "matrix": "Matrix Synapse",
+}
+CONTAINER_APP_DEFAULTS = {
+    "uptime-kuma": {"port": 3001, "container": "tater-uptime-kuma"},
+    "ntfy": {"port": 2586, "container": "tater-ntfy"},
+    "forgejo": {"port": 3000, "sshPort": 2222, "container": "tater-forgejo"},
+    "matrix": {"port": 8008, "container": "tater-matrix"},
+}
 VALID_ACCESS = {
     "sftp": {"disabled", "private", "public"},
     "ftp": {"disabled", "private", "public"},
@@ -115,23 +135,29 @@ class ControlHelperService:
         self.install_dir = Path(install_dir).resolve()
         self._mutation_lock = threading.Lock()
         self._cpu_sampler = CpuSampler()
+        self.history = SecurityHistory(Path("/var/log/tater-tunnel-control/security-events.json"))
 
     def execute(self, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if operation == "security-events":
+            return {"events": self.history.entries()}
         if operation == "snapshot":
             return self.snapshot()
-        if operation == "configure-app":
-            with self._mutation_lock:
-                return self.configure_app(payload)
-        if operation == "service-action":
-            with self._mutation_lock:
-                return self.service_action(payload)
-        if operation == "security-audit":
-            with self._mutation_lock:
-                return self.security_audit(payload)
-        if operation == "update-vps":
-            with self._mutation_lock:
-                return self.schedule_vps_update()
-        raise ControlHelperError("Control operation is not allowed")
+        operations = {
+            "configure-app": lambda: self.configure_app(payload),
+            "service-action": lambda: self.service_action(payload),
+            "security-audit": lambda: self.security_audit(payload),
+            "update-vps": self.schedule_vps_update,
+        }
+        if operation not in operations:
+            raise ControlHelperError("Control operation is not allowed")
+        with self._mutation_lock:
+            try:
+                result = operations[operation]()
+            except Exception:
+                self.history.record(operation, payload.get("app", ""), "failed")
+                raise
+            self.history.record(operation, payload.get("app", ""))
+            return result
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -139,6 +165,10 @@ class ControlHelperService:
             "apps": {
                 "sftpgo": sftpgo_snapshot(),
                 "znc": znc_snapshot(),
+                "uptime-kuma": managed_container_app_snapshot("uptime-kuma"),
+                "ntfy": managed_container_app_snapshot("ntfy"),
+                "forgejo": managed_container_app_snapshot("forgejo"),
+                "matrix": managed_container_app_snapshot("matrix"),
             },
             "updates": {"vps": vps_update_snapshot()},
             "capabilities": {
@@ -185,13 +215,27 @@ class ControlHelperService:
             raise ControlHelperError("App settings must be an object")
         if app == "sftpgo":
             return self._configure_sftpgo(settings)
-        return self._configure_znc(settings)
+        if app == "znc":
+            return self._configure_znc(settings)
+        return self._configure_container_app(app, settings)
 
     def service_action(self, payload: dict[str, Any]) -> dict[str, Any]:
         app = normalize_app(payload.get("app"))
         action = str(payload.get("action") or "").strip().lower()
         if action not in VALID_SERVICE_ACTIONS:
             raise ControlHelperError("Service action is not allowed")
+        if app in CONTAINER_APPS:
+            script = self._script("manage_vps_app.py")
+            result = run_mutation(
+                [sys.executable, str(script), "action", "--app", app, "--action", action]
+            )
+            return {
+                "status": "ok",
+                "app": app,
+                "action": action,
+                "output": result,
+                "snapshot": managed_container_app_snapshot(app),
+            }
         unit = "sftpgo.service" if app == "sftpgo" else znc_unit_name()
         if not unit:
             raise ControlHelperError(f"{display_app_name(app)} is not installed")
@@ -344,6 +388,41 @@ class ControlHelperService:
             "app": "znc",
             "output": output,
             "snapshot": znc_snapshot(),
+        }
+
+    def _configure_container_app(self, app: str, settings: dict[str, Any]) -> dict[str, Any]:
+        normalized = normalize_container_app_settings(app, settings)
+        runtime_dir = DEFAULT_SOCKET_PATH.parent
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{app}-settings.", suffix=".json", dir=runtime_dir
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(normalized, handle, separators=(",", ":"))
+                handle.write("\n")
+            os.chmod(temporary, 0o600)
+            script = self._script("manage_vps_app.py")
+            output = run_mutation(
+                [
+                    sys.executable,
+                    str(script),
+                    "configure",
+                    "--app",
+                    app,
+                    "--settings-file",
+                    str(temporary),
+                ]
+            )
+        finally:
+            normalized.clear()
+            temporary.unlink(missing_ok=True)
+        return {
+            "status": "ok",
+            "app": app,
+            "output": output,
+            "snapshot": managed_container_app_snapshot(app),
         }
 
     def _script(self, name: str) -> Path:
@@ -618,6 +697,113 @@ def znc_snapshot() -> dict[str, Any]:
     }
 
 
+def managed_container_app_snapshot(app: str) -> dict[str, Any]:
+    definition = CONTAINER_APP_DEFAULTS[app]
+    settings_path = MANAGED_APP_CONFIG_ROOT / app / "settings.json"
+    settings = read_json_file(settings_path)
+    installed = bool(settings)
+    active = docker_container_running(str(definition["container"])) if installed else False
+    port = int(settings.get("port") or definition["port"])
+    access = str(settings.get("access") or "private")
+    domain = str(settings.get("domain") or "")
+    endpoints = []
+    if installed:
+        endpoints.append(endpoint("WireGuard", f"http://{WIREGUARD_HOST}:{port}/", "wireguard"))
+        if access == "public" and domain:
+            endpoints.append(endpoint("Public HTTPS", f"https://{domain}/", "public"))
+        if app == "forgejo":
+            ssh_port = int(settings.get("sshPort") or definition["sshPort"])
+            ssh_host = domain if settings.get("sshAccess") == "public" and domain else WIREGUARD_HOST
+            ssh_scope = "public" if settings.get("sshAccess") == "public" else "wireguard"
+            endpoints.append(endpoint("Git SSH", f"ssh://git@{ssh_host}:{ssh_port}", ssh_scope))
+    public_settings = {
+        key: settings.get(key)
+        for key in (
+            "access",
+            "domain",
+            "port",
+            "setupComplete",
+            "hasAdmin",
+            "adminUser",
+            "adminEmail",
+            "sshAccess",
+            "sshPort",
+            "serverName",
+            "federation",
+        )
+        if key in settings
+    }
+    if "access" not in public_settings:
+        public_settings["access"] = "private"
+    public_settings["port"] = port
+    storage_root = MANAGED_APP_STATE_ROOT / app
+    if app == "uptime-kuma":
+        public_settings["setupComplete"] = sqlite_table_has_rows(
+            storage_root / "data" / "kuma.db", "user"
+        )
+    return {
+        "id": app,
+        "name": APP_NAMES[app],
+        "installed": installed,
+        "version": str(settings.get("version") or ""),
+        "service": {
+            "unit": f"docker:{definition['container']}" if installed else "",
+            "active": active,
+            "status": "active" if active else "stopped" if installed else "not-installed",
+            "enabled": bool(installed and settings.get("enabled", True)),
+        },
+        "settings": public_settings,
+        "storage": {
+            "usedBytes": directory_size(storage_root),
+            "path": str(storage_root),
+        },
+        "endpoints": endpoints,
+    }
+
+
+def docker_container_running(name: str) -> bool:
+    if not shutil.which("docker"):
+        return False
+    completed = run_command(
+        ["docker", "inspect", "--format", "{{.State.Running}}", name], timeout=8
+    )
+    return completed.returncode == 0 and completed.stdout.strip().lower() == "true"
+
+
+def sqlite_table_has_rows(database: Path, table: str) -> bool:
+    if not database.is_file() or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table):
+        return False
+    try:
+        connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=2)
+        try:
+            row = connection.execute(f'SELECT 1 FROM "{table}" LIMIT 1').fetchone()
+        finally:
+            connection.close()
+    except sqlite3.Error:
+        return False
+    return row is not None
+
+
+def directory_size(path: Path) -> int:
+    if not path.exists():
+        return 0
+    completed = run_command(["du", "-sb", str(path)], timeout=10)
+    if completed.returncode != 0:
+        return 0
+    try:
+        return max(0, int(completed.stdout.split()[0]))
+    except (ValueError, IndexError):
+        return 0
+
+
+def read_json_file(path: Path) -> dict[str, Any]:
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
 def parse_znc_config(path: Path | None) -> dict[str, Any]:
     if not path or not path.is_file():
         return {}
@@ -783,13 +969,62 @@ def read_key_value_file(path: Path, include_comments: bool = False) -> dict[str,
 
 def normalize_app(value: Any) -> str:
     app = str(value or "").strip().lower()
-    if app not in {"sftpgo", "znc"}:
+    if app not in APP_NAMES:
         raise ControlHelperError("App is not managed by Tater Tunnel")
     return app
 
 
 def display_app_name(app: str) -> str:
-    return "SFTPGo" if app == "sftpgo" else "ZNC"
+    return APP_NAMES.get(app, app)
+
+
+def normalize_container_app_settings(app: str, settings: dict[str, Any]) -> dict[str, Any]:
+    access = str(settings.get("access") or "private").strip().lower()
+    if access not in {"private", "public"}:
+        raise ControlHelperError("App access must be WireGuard-only or public HTTPS")
+    if access == "public" and settings.get("confirmPublicExposure") is not True:
+        raise ControlHelperError("Public access requires explicit confirmation")
+    domain = normalize_optional_domain(settings.get("domain"))
+    if access == "public" and not domain:
+        raise ControlHelperError("A dedicated public hostname is required")
+    normalized: dict[str, Any] = {"access": access, "domain": domain}
+
+    if app == "uptime-kuma":
+        return normalized
+
+    admin_user = normalize_app_username(settings.get("adminUser"))
+    normalized["adminUser"] = admin_user
+    password = str(settings.get("adminPassword") or "")
+    if password:
+        if not 12 <= len(password) <= 1024 or any(character in password for character in "\r\n\0"):
+            raise ControlHelperError("Administrator password must be 12 to 1024 characters")
+        normalized["adminPassword"] = password
+
+    if app == "forgejo":
+        email = str(settings.get("adminEmail") or "").strip().lower()
+        if len(email) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+            raise ControlHelperError("Administrator email is invalid")
+        ssh_access = str(settings.get("sshAccess") or "private").strip().lower()
+        if ssh_access not in {"private", "public"}:
+            raise ControlHelperError("Forgejo SSH access must be private or public")
+        if ssh_access == "public" and access != "public":
+            raise ControlHelperError("Forgejo public SSH requires public HTTPS access")
+        if ssh_access == "public" and settings.get("confirmPublicSsh") is not True:
+            raise ControlHelperError("Public Forgejo SSH requires explicit confirmation")
+        normalized.update({"adminEmail": email, "sshAccess": ssh_access})
+    elif app == "matrix":
+        server_name = normalize_required_domain(settings.get("serverName"), "Matrix server name")
+        if access == "public" and domain != server_name:
+            raise ControlHelperError("The public hostname must match the Matrix server name")
+        normalized["serverName"] = server_name
+    return normalized
+
+
+def normalize_app_username(value: Any) -> str:
+    username = str(value or "").strip()
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,31}", username):
+        raise ControlHelperError("Administrator username is invalid")
+    return username
 
 
 def normalize_access(protocol: str, value: Any, default: str) -> str:
@@ -847,12 +1082,13 @@ def normalize_optional_int(value: Any, label: str, minimum: int, maximum: int) -
     return normalize_int(value, label, minimum, maximum, minimum)
 
 
-class ThreadingUnixServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+class ThreadingUnixServer(BoundedRequests, socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     daemon_threads = True
     allow_reuse_address = True
 
 
 class ControlRequestHandler(socketserver.StreamRequestHandler):
+    timeout = 30
     def handle(self) -> None:
         try:
             self._require_allowed_peer()

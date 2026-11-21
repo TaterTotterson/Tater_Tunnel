@@ -1,0 +1,58 @@
+name: Sign VPS Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vps-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify release version and syntax
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          python3 -c 'import os; from tater_tunnel import __version__; assert os.environ["RELEASE_TAG"] == "v" + __version__'
+          python3 -m compileall -q tater_tunnel scripts/manage_vps_app.py scripts/verify_release.py
+          for script in scripts/*.sh; do bash -n "$script"; done
+          node --check app.js
+      - name: Build and sign VPS archive
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          SIGNING_KEY: ${{ secrets.TATER_TUNNEL_VPS_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$SIGNING_KEY"
+          signing_path="${RUNNER_TEMP}/tater-release-key"
+          trap 'rm -f "$signing_path"' EXIT
+          printf '%s\n' "$SIGNING_KEY" > "$signing_path"
+          mkdir -p release
+          git archive --format=tar.gz --prefix=tater-tunnel/ HEAD > release/tater-tunnel-vps.tar.gz
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          archive = Path("release/tater-tunnel-vps.tar.gz")
+          metadata = {"repository": "TaterTotterson/Tater_Tunnel", "tag": os.environ["RELEASE_TAG"], "sha256": hashlib.sha256(archive.read_bytes()).hexdigest()}
+          Path("release/vps-release.json").write_text(json.dumps(metadata, sort_keys=True) + "\n")
+          PY
+          ssh-keygen -Y sign -f "$signing_path" -n release@tatertunnel.com release/vps-release.json
+          python3 scripts/verify_release.py --tag "$RELEASE_TAG" --manifest release/vps-release.json --signature release/vps-release.json.sig --archive release/tater-tunnel-vps.tar.gz --allowed-signers scripts/release-allowed-signers --destination "${RUNNER_TEMP}/verified-vps"
+      - name: Publish signed VPS assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || gh release create "$RELEASE_TAG" --verify-tag --title "Tater Tunnel ${RELEASE_TAG}" --notes-file RELEASE_NOTES.md
+          gh release upload "$RELEASE_TAG" release/tater-tunnel-vps.tar.gz release/vps-release.json release/vps-release.json.sig --clobber

@@ -32,7 +32,7 @@ VOLUME ["/data", "/config"]
 EXPOSE 4173/tcp
 
 HEALTHCHECK --interval=20s --timeout=3s --start-period=15s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:4173/api/state >/dev/null || exit 1
+    CMD curl -fsS http://127.0.0.1:4173/healthz >/dev/null || exit 1
 
 ENTRYPOINT ["/usr/bin/tini", "--", "tater-tunnel"]
 CMD ["home"]

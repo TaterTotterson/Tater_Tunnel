@@ -131,7 +131,7 @@ install_packages() {
 
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
-  apt-get install -y ca-certificates iproute2 python3 wireguard wireguard-tools
+  apt-get install -y ca-certificates curl git openssh-client iproute2 python3 wireguard wireguard-tools
 }
 
 create_service_user() {
@@ -175,6 +175,8 @@ copy_app_files() {
 
 prepare_state() {
   local wg_dir="$CONFIG_DIR/wireguard"
+  install -o root -g root -m 0700 -d /etc/tater-tunnel-control
+  install -o root -g root -m 0700 -d /var/lib/tater-tunnel-control
   install -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0700 -d "$STATE_DIR"
   install -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0700 -d "$CONFIG_DIR"
   install -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0700 -d "$wg_dir"
@@ -220,6 +222,10 @@ Group=$SERVICE_USER
 WorkingDirectory=$INSTALL_DIR
 RuntimeDirectory=tater-tunnel-control
 RuntimeDirectoryMode=0750
+LogsDirectory=tater-tunnel-control
+LogsDirectoryMode=0700
+StateDirectory=tater-tunnel-control
+StateDirectoryMode=0700
 ExecStart=$python_bin -B -m tater_tunnel.control_helper --socket $CONTROL_SOCKET --install-dir $INSTALL_DIR --allowed-user $SERVICE_USER
 Restart=on-failure
 RestartSec=3
@@ -332,6 +338,8 @@ Local agent URL:
 
 Pairing code:
   $(cat "$STATE_DIR/pairing-code")
+
+Unused pairing codes expire after 15 minutes. Reopen pairing for a fresh code.
 
 Pairing mode:
   $([ "$REOPEN_PAIRING" = "1" ] && printf 'reopened' || printf 'unchanged')

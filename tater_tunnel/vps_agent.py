@@ -13,7 +13,7 @@ import threading
 import time
 import traceback
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -24,6 +24,7 @@ from . import __version__
 from .control_helper import ControlHelperClient, ControlHelperClientError, DEFAULT_SOCKET_PATH
 from .wireguard import KeyPair, WireGuardKeyProvider
 from .wireguard_runtime import WIREGUARD_MTU, WireGuardRuntimeError, build_wireguard_runtime
+from .security import BoundedRequests, SecurityHistory, redact_submitted_secrets, read_request_body
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -31,6 +32,7 @@ STATE_PATH = PROJECT_ROOT / ".tater_tunnel" / "vps-agent.json"
 WIREGUARD_CONFIG_PATH = PROJECT_ROOT / ".tater_tunnel" / "wireguard" / "tater0.conf"
 API_MAX_BODY_BYTES = 64 * 1024
 PAIRING_FAILURE_LIMIT = 8
+PAIRING_LIFETIME_SECONDS = 15 * 60
 PAIRING_FAILURE_WINDOW_SECONDS = 5 * 60
 MAX_TRACKED_PAIRING_ADDRESSES = 1024
 REQUEST_SOCKET_TIMEOUT_SECONDS = 30
@@ -100,6 +102,7 @@ def default_vps_state(pairing_code: str | None = None) -> dict[str, Any]:
             "enabled": True,
             "code": pairing_code or create_pairing_code(),
             "claimedAt": "",
+            "expiresAt": (datetime.now(timezone.utc) + timedelta(seconds=PAIRING_LIFETIME_SECONDS)).isoformat(),
         },
         "interface": {
             "name": "tater0",
@@ -124,11 +127,16 @@ class VpsConfigStore:
             if not self.path.exists():
                 return self.save(default_vps_state(self.pairing_code))
             with self.path.open("r", encoding="utf-8") as handle:
-                return self._merge_defaults(json.load(handle))
+                raw = json.load(handle)
+            merged = self._merge_defaults(raw)
+            if raw.get("pairing", {}).get("enabled") and merged["pairing"].get("expired"):
+                self.save(merged)
+                SecurityHistory(self.path.parent / "vps-security-events.json").record("pairing.expired")
+            return merged
 
     def save(self, state: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             merged = self._merge_defaults(state)
             existing = self.path.stat() if self.path.exists() else None
             fd, temp_name = tempfile.mkstemp(
@@ -156,7 +164,9 @@ class VpsConfigStore:
             "enabled": True,
             "claimedAt": "",
             "code": pairing_code or create_pairing_code(),
+            "expiresAt": (datetime.now(timezone.utc) + timedelta(seconds=PAIRING_LIFETIME_SECONDS)).isoformat(),
         }
+        SecurityHistory(self.path.parent / "vps-security-events.json").record("pairing.opened")
         return self.save(state)
 
     def _merge_defaults(self, state: dict[str, Any]) -> dict[str, Any]:
@@ -180,6 +190,14 @@ class VpsConfigStore:
         merged = default_vps_state(self.pairing_code)
         merged.update({key: value for key, value in state.items() if key not in {"pairing", "interface"}})
         merged["pairing"].update(state.get("pairing", {}))
+        if merged["pairing"].get("enabled"):
+            try:
+                expires = datetime.fromisoformat(str((state.get("pairing") or {}).get("expiresAt") or ""))
+                expired = expires <= datetime.now(timezone.utc)
+            except (ValueError, TypeError):
+                expired = True
+            if expired:
+                merged["pairing"].update({"enabled": False, "expired": True, "code": ""})
         merged["interface"].update(state.get("interface", {}))
 
         home_agent = merged.get("homeAgent")
@@ -281,7 +299,7 @@ class VpsControlJobs:
                 operation, payload, timeout=CONTROL_JOB_TIMEOUT_SECONDS
             )
         except ControlHelperClientError as error:
-            self._update(job_id, status="failed", error=str(error), finishedAt=utc_now())
+            self._update(job_id, status="failed", error=redact_submitted_secrets(str(error), payload), finishedAt=utc_now())
         except Exception:
             self._update(
                 job_id,
@@ -290,7 +308,7 @@ class VpsControlJobs:
                 finishedAt=utc_now(),
             )
         else:
-            self._update(job_id, status="complete", result=result, finishedAt=utc_now())
+            self._update(job_id, status="complete", result=redact_submitted_secrets(result, payload), finishedAt=utc_now())
         finally:
             payload.clear()
 
@@ -333,6 +351,7 @@ class VpsAgentService:
         self._pairing_failures: dict[str, list[float]] = {}
         self._pairing_failure_lock = threading.Lock()
         self._state_lock = threading.RLock()
+        self.history = SecurityHistory(self.store.path.parent / "vps-security-events.json")
         self._diagnostics_lock = threading.Lock()
         self._diagnostics_event = threading.Event()
         self._diagnostics_running = False
@@ -361,6 +380,15 @@ class VpsAgentService:
 
     def control_job(self, job_id: str) -> dict[str, Any]:
         return {"job": self.control_jobs.get(job_id)}
+
+    def security_events(self):
+        entries = self.history.entries()
+        try:
+            result = self.control_jobs.client.request("security-events", timeout=5)
+            entries += result.get("events", [])
+        except (ControlHelperClientError, AttributeError):
+            pass
+        return {"events": sorted(entries, key=lambda item: item.get("time", ""))[-500:]}
 
     def wireguard_diagnostics(self) -> dict[str, Any]:
         state = self.store.load()
@@ -451,6 +479,8 @@ class VpsAgentService:
         public_key = str(home_agent.get("publicKey") or "").strip()
 
         if not state["pairing"]["enabled"]:
+            if state["pairing"].get("expired"):
+                raise VpsAgentError(HTTPStatus.CONFLICT, "Pairing code expired. Reopen pairing on the VPS for a fresh code.")
             raise VpsAgentError(HTTPStatus.CONFLICT, "Pairing mode is disabled")
         self._check_pairing_rate_limit(remote_address)
         if not secrets.compare_digest(code, str(state["pairing"]["code"])):
@@ -470,6 +500,7 @@ class VpsAgentService:
         state["lastCheck"] = now
         state["pairing"]["enabled"] = False
         state["pairing"]["claimedAt"] = now
+        state["pairing"]["code"] = ""
         state["homeAgent"] = {
             "id": str(home_agent.get("id") or "home-agent")[:128],
             "transport": "wireguard",
@@ -481,6 +512,7 @@ class VpsAgentService:
         self._clear_pairing_failures(remote_address)
         self._apply_wireguard(state)
         saved = self.store.save(state)
+        self.history.record("pairing.completed")
         vps_wireguard = {
             "publicKey": saved["interface"]["wireguard"]["publicKey"],
             "address": saved["interface"]["address"],
@@ -532,6 +564,7 @@ class VpsAgentService:
         state["lastCheck"] = utc_now()
         self._apply_wireguard(state)
         self.store.save(state)
+        self.history.record("device.added", peer_id)
         return {
             "status": "ok",
             "peer": {"id": peer_id, "allowedIp": allowed_ip},
@@ -548,12 +581,14 @@ class VpsAgentService:
         state["lastCheck"] = utc_now()
         self._apply_wireguard(state)
         self.store.save(state)
+        self.history.record("device.revoked", peer_id)
         return {"status": "ok", "removedPeerId": peer_id}
 
     @synchronized_state
     def reset(self) -> dict[str, Any]:
         state = self.store.reset()
         self._apply_wireguard(state)
+        self.history.record("tunnel.reset")
         return {"state": self._public_state(self.store.save(state))}
 
     def require_management_client(self, token: str, remote_address: str) -> None:
@@ -593,6 +628,7 @@ class VpsAgentService:
     def _record_pairing_failure(self, remote_address: str) -> None:
         with self._pairing_failure_lock:
             self._pairing_failures.setdefault(str(remote_address or "unknown"), []).append(time.monotonic())
+        self.history.record("pairing.failed", outcome="failed")
 
     def _clear_pairing_failures(self, remote_address: str) -> None:
         with self._pairing_failure_lock:
@@ -629,7 +665,7 @@ class VpsAgentService:
         }
 
 
-class VpsAgentServer(ThreadingHTTPServer):
+class VpsAgentServer(BoundedRequests, ThreadingHTTPServer):
     def __init__(self, server_address: tuple[str, int], service: VpsAgentService):
         super().__init__(server_address, VpsAgentHandler)
         self.service = service
@@ -652,7 +688,7 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
                 self._send_landing_page()
             elif path == "/assets/tater-vps-mascot.png":
                 self._send_static_png(LANDING_MASCOT_PATH)
-            elif path in {"/api/health", "/api/state", "/api/wireguard", "/api/control/overview"}:
+            elif path in {"/api/health", "/api/state", "/api/wireguard", "/api/control/overview", "/api/security/events"}:
                 self._require_management()
                 if path == "/api/health":
                     self._send_json(self.server.service.health())
@@ -660,6 +696,8 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
                     self._send_json(self.server.service.state())
                 elif path == "/api/wireguard":
                     self._send_json(self.server.service.wireguard_diagnostics())
+                elif path == "/api/security/events":
+                    self._send_json(self.server.service.security_events())
                 else:
                     self._send_json(self.server.service.control_overview())
             elif path.startswith("/api/control/jobs/"):
@@ -742,10 +780,21 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
             raise VpsAgentError(HTTPStatus.BAD_REQUEST, "Transfer-Encoding is not supported")
         if self.headers.get_content_type() != "application/json":
             raise VpsAgentError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "API requests must use application/json")
+        if len(self.headers.get_all("Content-Length", [])) > 1:
+            raise VpsAgentError(HTTPStatus.BAD_REQUEST, "Duplicate Content-Length is not supported")
         length = parse_content_length(self.headers.get("Content-Length", "0"))
         if length > API_MAX_BODY_BYTES:
             raise VpsAgentError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Request body is too large")
-        payload = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+        try:
+            raw = read_request_body(self.rfile, self.connection, length)
+        except TimeoutError as error:
+            raise VpsAgentError(HTTPStatus.REQUEST_TIMEOUT, "Request body timed out") from error
+        if len(raw) != length:
+            raise VpsAgentError(HTTPStatus.BAD_REQUEST, "Request body is incomplete")
+        try:
+            payload = json.loads(raw.decode("utf-8")) if length else {}
+        except UnicodeDecodeError as error:
+            raise VpsAgentError(HTTPStatus.BAD_REQUEST, "Request body must use UTF-8") from error
         if not isinstance(payload, dict):
             raise VpsAgentError(HTTPStatus.BAD_REQUEST, "Request body must be a JSON object")
         return payload
@@ -767,6 +816,7 @@ class VpsAgentHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def _send_error(self, status: HTTPStatus, message: str) -> None:
+        self.close_connection = True
         self._send_json({"error": message}, status)
 
     def _send_landing_page(self) -> None:

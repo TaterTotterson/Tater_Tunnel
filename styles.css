@@ -106,6 +106,9 @@ main { width: min(1440px, 100%); margin: 0 auto; padding: 30px 32px 60px; }
 .app-mark-chat { background: #b5572b; }
 .app-mark-monitor { background: #3678a7; }
 .app-mark-backup { background: #6f5ba3; }
+.app-mark-notify { background: #8a6c20; }
+.app-mark-code { background: #5f6268; }
+.app-mark-matrix { background: #8a3f57; }
 .service-main strong, .service-main span { display: block; }
 .service-main strong { font-size: .86rem; }
 .service-main span { margin-top: 3px; color: var(--muted); font-size: .72rem; }
@@ -169,6 +172,17 @@ main { width: min(1440px, 100%); margin: 0 auto; padding: 30px 32px 60px; }
 
 .split-layout, .system-grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 18px; }
 .device-table-large .device-row { grid-template-columns: 34px minmax(0,1fr) minmax(125px,.55fr) auto; }
+.device-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.service-choices { display: flex; flex-wrap: wrap; gap: 10px 18px; grid-column: 1 / -1; }
+.service-choices[hidden] { display: none; }
+.service-choices label { display: flex; align-items: center; gap: 8px; font-size: .78rem; }
+.service-choices input { accent-color: var(--orange); }
+.permissions-dialog { max-width: 540px; }
+.permissions-dialog .service-choices { margin-top: 18px; }
+.security-history { margin-top: 24px; border-top: 1px solid var(--line); }
+.security-event { display: grid; grid-template-columns: 170px minmax(0,1fr) 70px; gap: 14px; padding: 12px 18px; border-bottom: 1px solid var(--line); font-size: .7rem; overflow-wrap: anywhere; }
+.security-event time { color: var(--muted); }
+@media (max-width: 600px) { .security-event { grid-template-columns: minmax(0,1fr) 60px; } .security-event time { grid-column: 1 / -1; } }
 .route-list { display: grid; }
 .route-list > div { display: grid; grid-template-columns: 52px minmax(0,1fr) auto; align-items: center; gap: 12px; min-height: 70px; padding: 11px 18px; border-bottom: 1px solid var(--line); }
 .route-list > div:last-child { border-bottom: 0; }
@@ -281,6 +295,7 @@ main { width: min(1440px, 100%); margin: 0 auto; padding: 30px 32px 60px; }
 .service-control-form { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .field, .compact-field { display: grid; gap: 6px; min-width: 0; }
 .field > span, .compact-field > span { color: var(--muted); font-size: .66rem; font-weight: 750; }
+.field > small { color: var(--muted); font-size: .61rem; line-height: 1.4; }
 .field input, .field select, .compact-field input, .compact-field select { width: 100%; min-width: 0; min-height: 37px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 5px; outline: 0; color: var(--text); background: var(--field); font-size: .73rem; }
 .field input:focus, .field select:focus, .compact-field input:focus, .compact-field select:focus { border-color: var(--cyan); }
 .field input[readonly], .compact-field input[readonly] { color: var(--muted); background: #121210; cursor: default; }
@@ -295,10 +310,11 @@ main { width: min(1440px, 100%); margin: 0 auto; padding: 30px 32px 60px; }
 .qr-panel pre { max-height: 190px; overflow: auto; padding: 10px; color: var(--text-soft); background: var(--field); font-size: .62rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .setting-note { display: grid; align-content: center; min-height: 52px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 5px; }
+.setting-note.wide-note { grid-column: 1 / -1; }
 .setting-note strong, .setting-note small, .protocol-label strong, .protocol-label small { display: block; }
 .setting-note strong, .protocol-label strong { font-size: .74rem; }
 .setting-note small, .protocol-label small { margin-top: 3px; color: var(--muted); font-size: .63rem; }
-.cloudflare-field.is-hidden, #webdavDomainField.is-hidden { display: none; }
+.cloudflare-field.is-hidden, #webdavDomainField.is-hidden, .managed-domain.is-hidden { display: none; }
 .job-panel { display: grid; grid-template-columns: 30px minmax(0, 1fr); align-items: center; gap: 12px; margin-top: 16px; padding: 13px 15px; border: 1px solid rgba(75,191,232,.28); background: rgba(75,191,232,.07); }
 .job-panel strong { font-size: .78rem; }
 .job-panel p { margin: 3px 0 0; color: var(--muted); font-size: .68rem; }

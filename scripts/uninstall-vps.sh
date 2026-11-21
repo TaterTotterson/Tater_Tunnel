@@ -173,6 +173,7 @@ Will remove:
   - Privileged Tater Tunnel control helper
   - Installed app files
   - Live WireGuard interface if it exists
+  - Managed container app access and container network guard
   - Tater service user/group if state/config data is purged
 
 Will keep unless selected:
@@ -198,6 +199,23 @@ stop_service() {
   systemctl daemon-reload >/dev/null 2>&1 || true
   systemctl reset-failed "$SERVICE_NAME" >/dev/null 2>&1 || true
   systemctl reset-failed "$CONTROL_SERVICE_NAME" >/dev/null 2>&1 || true
+}
+
+stop_managed_apps() {
+  local app
+  for app in uptime-kuma ntfy forgejo matrix; do
+    if [ -f "/etc/tater-tunnel-control/apps/$app/settings.json" ] \
+      && [ -f "$INSTALL_DIR/scripts/manage_vps_app.py" ]; then
+      python3 "$INSTALL_DIR/scripts/manage_vps_app.py" action --app "$app" --action disable
+      rm -f "/etc/systemd/system/tater-tunnel-app-$app.service"
+    fi
+  done
+  systemctl disable --now tater-tunnel-container-guard >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/tater-tunnel-container-guard.service
+  if command -v nft >/dev/null 2>&1; then
+    nft delete table inet tater_apps_guard >/dev/null 2>&1 || true
+  fi
+  systemctl daemon-reload
 }
 
 remove_wireguard_interface() {
@@ -262,6 +280,9 @@ remove_paths() {
   if [ "$PURGE_DATA" = "1" ]; then
     safe_remove_tree "$STATE_DIR"
     safe_remove_tree "$CONFIG_DIR"
+    safe_remove_tree /var/lib/tater-tunnel-control
+    safe_remove_tree /etc/tater-tunnel-control
+    safe_remove_tree /var/log/tater-tunnel-control
   fi
 
   if [ "$REMOVE_SOURCE" = "1" ]; then
@@ -320,6 +341,7 @@ if [ "$ASSUME_YES" != "1" ]; then
 fi
 
 stop_service
+stop_managed_apps
 remove_wireguard_interface
 remove_ufw_rules
 disable_caddy_proxy

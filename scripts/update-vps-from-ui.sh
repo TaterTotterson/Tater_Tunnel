@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 OFFICIAL_REPO="https://github.com/TaterTotterson/Tater_Tunnel.git"
 INSTALL_DIR="/opt/tater-tunnel"
-STATUS_FILE="/var/lib/tater-tunnel/update-status.json"
+STATUS_FILE="/var/lib/tater-tunnel-control/update-status.json"
 LATEST_TAG=""
 TEMP_DIR=""
 
@@ -67,7 +67,7 @@ fi
 sleep 5
 write_status "running" "" "Checking the official Tater Tunnel releases."
 
-for command in git python3 systemctl; do
+for command in git python3 systemctl curl ssh-keygen; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "$command is required for managed VPS updates." >&2
     exit 1
@@ -91,11 +91,28 @@ if [ "v$CURRENT_VERSION" = "$LATEST_TAG" ]; then
   write_status "current" "$LATEST_TAG" "The VPS Agent is already current."
   exit 0
 fi
+if [ -n "$CURRENT_VERSION" ] \
+  && [ "$(printf '%s\n' "v$CURRENT_VERSION" "$LATEST_TAG" | sort -V | tail -n 1)" != "$LATEST_TAG" ]; then
+  write_status "current" "$LATEST_TAG" "The installed VPS version is newer; downgrades are blocked."
+  exit 0
+fi
 
 write_status "running" "$LATEST_TAG" "Downloading and verifying $LATEST_TAG."
 TEMP_DIR="$(mktemp -d /tmp/tater-tunnel-update.XXXXXX)"
 SOURCE_DIR="$TEMP_DIR/source"
-git clone --quiet --depth 1 --branch "$LATEST_TAG" --single-branch "$OFFICIAL_REPO" "$SOURCE_DIR"
+RELEASE_URL="https://github.com/TaterTotterson/Tater_Tunnel/releases/download/${LATEST_TAG}"
+for asset in vps-release.json vps-release.json.sig tater-tunnel-vps.tar.gz; do
+  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+    --connect-timeout 15 --max-time 180 --max-filesize 104857600 \
+    "${RELEASE_URL}/${asset}" --output "${TEMP_DIR}/${asset}"
+done
+python3 "$INSTALL_DIR/scripts/verify_release.py" \
+  --tag "$LATEST_TAG" \
+  --manifest "$TEMP_DIR/vps-release.json" \
+  --signature "$TEMP_DIR/vps-release.json.sig" \
+  --archive "$TEMP_DIR/tater-tunnel-vps.tar.gz" \
+  --allowed-signers "$INSTALL_DIR/scripts/release-allowed-signers" \
+  --destination "$SOURCE_DIR"
 
 SOURCE_VERSION="$(sed -n 's/^__version__ = "\([0-9][0-9.]*\)"/\1/p' "$SOURCE_DIR/tater_tunnel/__init__.py" | head -n 1)"
 if [ "v$SOURCE_VERSION" != "$LATEST_TAG" ]; then

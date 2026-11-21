@@ -1070,6 +1070,7 @@ harden_existing_tater_firewall() {
   if ! command -v ufw >/dev/null 2>&1 || ! ufw status | grep -q '^Status: active'; then
     return 0
   fi
+  sed -i 's/^IPV6=.*/IPV6=yes/' /etc/default/ufw
 
   ufw --force delete allow "$listen_port/tcp" >/dev/null 2>&1 || true
   ufw --force delete allow "$listen_port" >/dev/null 2>&1 || true
@@ -1587,7 +1588,7 @@ ${pairing_code:-UNAVAILABLE}
 
 Open Tater Tunnel on your computer and enter the URL and code above.
 
-Keep this screen private. The code closes after the first successful pairing."
+Keep this screen private. Pair within 15 minutes. Use Reopen pairing for a fresh code."
     return
   fi
 
@@ -1604,7 +1605,7 @@ Keep this screen private. The code closes after the first successful pairing."
   printf '| %-76s |\n' ''
   printf '+------------------------------------------------------------------------------+\n'
   printf '| %-76.76s |\n' 'Open Tater Tunnel on your computer and enter the URL and code above.'
-  printf '| %-76.76s |\n' 'Keep this screen private. The code closes after the first successful pairing.'
+  printf '| %-76.76s |\n' 'Keep this screen private. Pair within 15 minutes or reopen pairing.'
   printf '+------------------------------------------------------------------------------+\n'
 }
 

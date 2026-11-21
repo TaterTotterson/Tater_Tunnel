@@ -9,6 +9,15 @@ const SERVICE_PRESETS = {
   matrix: { name: "matrix", host: "127.0.0.1", port: 8008, protocol: "tcp" },
   emby: { name: "emby", host: "127.0.0.1", port: 8096, protocol: "tcp" }
 };
+const APP_ORDER = ["sftpgo", "znc", "uptime-kuma", "ntfy", "forgejo", "matrix"];
+const APP_META = {
+  sftpgo: { mark: "S", className: "app-mark-files", description: "Secure file access with SFTP, FTP, WebDAV, quotas, and private administration.", subtitle: "Files and WebDAV" },
+  znc: { mark: "Z", className: "app-mark-chat", description: "Always-on IRC bouncer with a private web console and managed listeners.", subtitle: "IRC bouncer" },
+  "uptime-kuma": { mark: "U", className: "app-mark-monitor", description: "Private uptime monitoring, service checks, status history, and alerting.", subtitle: "Service monitoring" },
+  ntfy: { mark: "N", className: "app-mark-notify", description: "Authenticated notifications for Tater services, devices, jobs, and server events.", subtitle: "Notifications" },
+  forgejo: { mark: "F", className: "app-mark-code", description: "Private Git hosting with repositories, issues, releases, and managed SSH access.", subtitle: "Git hosting" },
+  matrix: { mark: "M", className: "app-mark-matrix", description: "A managed Synapse homeserver with PostgreSQL and optional public federation.", subtitle: "Messaging server" }
+};
 
 const defaultState = {
   paired: false,
@@ -33,6 +42,8 @@ let refreshInFlight = false;
 let healthTimer = null;
 let controlTimer = null;
 let toastTimer = null;
+let csrfToken = "";
+let editingDeviceId = "";
 
 const $ = (id) => document.getElementById(id);
 const elements = Object.fromEntries([
@@ -55,7 +66,17 @@ const elements = Object.fromEntries([
   "webdavDomainField", "webdavDomain", "cloudflareEnabled", "cloudflareZone",
   "cloudflareToken", "cloudflareIpv4", "zncRuntimeBadge", "zncEndpoints", "zncUser",
   "zncDataDir", "zncIrcPort", "zncWebPort", "zncInitialAdmin", "zncAdminUser",
-  "zncAdminPassword", "jobPanel", "jobTitle", "jobMessage", "toast"
+  "zncAdminPassword", "uptimeRuntimeBadge", "uptimeEndpoints", "uptimeAccess",
+  "uptimeDomainField", "uptimeDomain", "ntfyRuntimeBadge", "ntfyEndpoints", "ntfyAccess",
+  "ntfyDomainField", "ntfyDomain", "ntfyInitialAdmin", "ntfyAdminUser", "ntfyAdminPassword",
+  "forgejoRuntimeBadge", "forgejoEndpoints", "forgejoAccess", "forgejoDomainField",
+  "forgejoDomain", "forgejoSshAccess", "forgejoInitialAdmin", "forgejoAdminUser",
+  "forgejoAdminEmail", "forgejoAdminPassword", "matrixRuntimeBadge", "matrixEndpoints",
+  "matrixAccess", "matrixServerName", "matrixDomainField", "matrixDomain",
+  "matrixInitialAdmin", "matrixAdminUser", "matrixAdminPassword", "jobPanel", "jobTitle",
+  "jobMessage", "toast",
+  "deviceAccessMode", "deviceServiceChoices", "permissionsDialog", "permissionsForm",
+  "permissionsTitle", "permissionsMode", "permissionsChoices", "cancelPermissions", "securityHistory"
 ].map((id) => [id, $(id)]));
 
 bindEvents();
@@ -87,6 +108,10 @@ function bindEvents() {
     button.closest("form").hidden = true;
   }));
   elements.deviceForm.addEventListener("submit", addDevice);
+  elements.deviceAccessMode.addEventListener("change", () => renderServiceChoices(elements.deviceServiceChoices, elements.deviceAccessMode.value));
+  elements.permissionsMode.addEventListener("change", () => renderServiceChoices(elements.permissionsChoices, elements.permissionsMode.value));
+  elements.cancelPermissions.addEventListener("click", () => elements.permissionsDialog.close());
+  elements.permissionsForm.addEventListener("submit", saveDevicePermissions);
   elements.serviceForm.addEventListener("submit", addService);
   elements.servicePreset.addEventListener("change", applyServicePreset);
   elements.closeQrButton.addEventListener("click", () => { elements.qrPanel.hidden = true; });
@@ -96,6 +121,13 @@ function bindEvents() {
   elements.appManagerForm.addEventListener("submit", saveAppChanges);
   elements.webdavAccess.addEventListener("change", syncConditionalFields);
   elements.cloudflareEnabled.addEventListener("change", syncConditionalFields);
+  [elements.uptimeAccess, elements.ntfyAccess, elements.forgejoAccess, elements.matrixAccess]
+    .forEach((select) => select.addEventListener("change", syncConditionalFields));
+  elements.matrixServerName.addEventListener("input", () => {
+    if (!getApp("matrix")?.installed && elements.matrixAccess.value === "public") {
+      elements.matrixDomain.value = elements.matrixServerName.value;
+    }
+  });
   elements.zncUser.addEventListener("input", () => {
     if (!getApp("znc")?.settings?.hasConfig) {
       elements.zncDataDir.value = elements.zncUser.value ? `/home/${elements.zncUser.value}/.znc` : "";
@@ -111,6 +143,7 @@ function bindEvents() {
 
 async function boot() {
   try {
+    csrfToken = (await requestApi("/api/session")).csrfToken;
     state = normalizeState(await requestApi("/api/state"));
   } catch (error) {
     connectionError = `Home Agent API is not available: ${error.message}`;
@@ -187,6 +220,12 @@ async function refreshControl(silent = true) {
     if (!silent) showToast(controlError, true);
   }
   renderControl();
+  try {
+    const result = await requestApi("/api/security/events");
+    renderSecurityHistory(result.events || []);
+  } catch {
+    elements.securityHistory.replaceChildren(emptyRow("Security history is unavailable. Update both agents."));
+  }
 }
 
 function renderShell() {
@@ -245,7 +284,7 @@ function setMetric(valueElement, meterElement, detailElement, percent, value, de
 }
 
 function renderApps() {
-  const apps = [getApp("sftpgo"), getApp("znc")].filter(Boolean);
+  const apps = APP_ORDER.map(getApp).filter(Boolean);
   const installed = apps.filter((app) => app.installed).length;
   elements.appCount.textContent = String(installed);
   elements.appSummary.textContent = control ? `${installed} installed, ${apps.length - installed} available` : (controlError || "Checking apps");
@@ -259,14 +298,15 @@ function renderApps() {
   const visibleApps = apps.filter((app) => activeFilter === "all" || (activeFilter === "installed") === Boolean(app.installed));
   if (!visibleApps.length) elements.appCatalog.append(emptyRow(`No ${activeFilter} apps.`));
   visibleApps.forEach((app) => {
+    const meta = APP_META[app.id] || { mark: app.name.charAt(0), className: "", description: "Managed VPS application.", subtitle: "Managed app" };
     const row = document.createElement("article");
     row.className = "app-row";
     row.dataset.appKind = app.installed ? "installed" : "available";
     const endpoints = (app.endpoints || []).slice(0, 2).map((item) => `<code>${escapeHtml(item.url)}</code>`).join("");
-    const detail = app.id === "sftpgo"
-      ? `<span>Storage</span><strong>${formatBytes(app.storage?.usedBytes)}</strong>`
-      : `<span>Networks</span><strong>${app.settings?.networkCount || 0}</strong>`;
-    row.innerHTML = `<div class="app-mark ${app.id === "sftpgo" ? "app-mark-files" : "app-mark-chat"}">${app.name.charAt(0)}</div><div class="app-description"><div><h2>${escapeHtml(app.name)}</h2><span class="state-badge ${app.service?.active ? "is-good" : ""}">${app.service?.active ? "Running" : app.installed ? "Stopped" : "Available"}</span></div><p>${app.id === "sftpgo" ? "Secure file access with SFTP, FTP, WebDAV, quotas, and private administration." : "Always-on IRC bouncer with a private web console and managed listeners."}</p><div class="endpoint-preview"><span>WG</span>${endpoints || "<code>Configure to create private links</code>"}</div></div><div class="app-facts"><span>Version</span><strong>${escapeHtml(app.version || "Not installed")}</strong>${detail}</div>`;
+    const detail = app.id === "znc"
+      ? `<span>Networks</span><strong>${app.settings?.networkCount || 0}</strong>`
+      : `<span>Storage</span><strong>${formatBytes(app.storage?.usedBytes)}</strong>`;
+    row.innerHTML = `<div class="app-mark ${meta.className}">${escapeHtml(meta.mark)}</div><div class="app-description"><div><h2>${escapeHtml(app.name)}</h2><span class="state-badge ${app.service?.active ? "is-good" : ""}">${app.service?.active ? "Running" : app.installed ? "Stopped" : "Available"}</span></div><p>${escapeHtml(meta.description)}</p><div class="endpoint-preview"><span>LINK</span>${endpoints || "<code>Configure to create managed links</code>"}</div></div><div class="app-facts"><span>Version</span><strong>${escapeHtml(app.version || "Not installed")}</strong>${detail}</div>`;
     const button = document.createElement("button");
     button.type = "button";
     button.className = `button ${app.installed ? "button-secondary" : "button-primary"}`;
@@ -282,9 +322,10 @@ function renderOverviewApps(apps) {
   elements.overviewApps.replaceChildren();
   if (!apps.length) return elements.overviewApps.append(emptyRow(controlError || "No app status yet."));
   apps.forEach((app) => {
+    const meta = APP_META[app.id] || { mark: app.name.charAt(0), className: "", subtitle: "Managed app" };
     const row = document.createElement("article");
     row.className = "service-row";
-    row.innerHTML = `<div class="app-mark ${app.id === "sftpgo" ? "app-mark-files" : "app-mark-chat"}">${app.name.charAt(0)}</div><div class="service-main"><strong>${escapeHtml(app.name)}</strong><span>${app.id === "sftpgo" ? "Files and WebDAV" : "IRC bouncer"}</span></div><span class="state-badge ${app.service?.active ? "is-good" : ""}">${app.service?.active ? "Running" : app.installed ? "Stopped" : "Available"}</span><div class="service-meta"><strong>${escapeHtml(app.version || "-")}</strong><span>version</span></div>`;
+    row.innerHTML = `<div class="app-mark ${meta.className}">${escapeHtml(meta.mark)}</div><div class="service-main"><strong>${escapeHtml(app.name)}</strong><span>${escapeHtml(meta.subtitle)}</span></div><span class="state-badge ${app.service?.active ? "is-good" : ""}">${app.service?.active ? "Running" : app.installed ? "Stopped" : "Available"}</span><div class="service-meta"><strong>${escapeHtml(app.version || "-")}</strong><span>version</span></div>`;
     const button = document.createElement("button");
     button.className = "row-button";
     button.type = "button";
@@ -318,6 +359,7 @@ function renderTunnel() {
   elements.deviceList.replaceChildren();
   if (!devices.length) elements.deviceList.append(emptyRow("No devices have been approved."));
   devices.forEach((device) => elements.deviceList.append(deviceRow(device, true)));
+  if (elements.deviceForm.hidden) renderServiceChoices(elements.deviceServiceChoices, elements.deviceAccessMode.value);
 
   elements.routeList.replaceChildren();
   const routes = Object.entries(state.accessRoutes || {});
@@ -343,14 +385,23 @@ function deviceRow(device, actionable) {
   const row = document.createElement("div");
   const connected = isDeviceConnected(device);
   row.className = `device-row ${connected ? "" : "is-muted"}`.trim();
-  row.innerHTML = `<span class="device-icon">${escapeHtml((device.name || "D").charAt(0).toUpperCase())}</span><div><strong>${escapeHtml(device.name || "Device")}</strong><span>${escapeHtml(device.type || "Device")} / ${escapeHtml(device.person || "Tater user")}${actionable ? ` / ${escapeHtml(formatTransfer(device.wireguard?.live || {}))}` : ""}</span></div><div class="last-seen"><strong>${connected ? "Connected" : "Waiting"}</strong><span>${escapeHtml(device.lastSeen || "No handshake yet")}</span></div>`;
+  const access = device.access?.mode === "selected" ? `${device.access.services?.length || 0} home services` : "All home services";
+  row.innerHTML = `<span class="device-icon">${escapeHtml((device.name || "D").charAt(0).toUpperCase())}</span><div><strong>${escapeHtml(device.name || "Device")}</strong><span>${escapeHtml(device.type || "Device")} / ${escapeHtml(device.person || "Tater user")}${actionable ? ` / ${escapeHtml(formatTransfer(device.wireguard?.live || {}))}<br>${escapeHtml(access)}` : ""}</span></div><div class="last-seen"><strong>${connected ? "Connected" : "Waiting"}</strong><span>${escapeHtml(device.lastSeen || "No handshake yet")}</span></div>`;
   if (actionable) {
+    const actions = document.createElement("div");
+    actions.className = "device-actions";
+    const permissions = document.createElement("button");
+    permissions.type = "button";
+    permissions.className = "row-button";
+    permissions.textContent = "Access";
+    permissions.addEventListener("click", () => openDevicePermissions(device));
     const button = document.createElement("button");
     button.type = "button";
     button.className = "row-button danger-row-button";
     button.textContent = "Revoke";
     button.addEventListener("click", () => revokeDevice(device.id, device.name, button));
-    row.append(button);
+    actions.append(permissions, button);
+    row.append(actions);
   } else {
     const dot = document.createElement("span");
     dot.className = connected ? "pulse-dot" : "offline-dot";
@@ -442,14 +493,20 @@ function openAppDialog(appId) {
   const app = getApp(appId);
   if (!app) return showToast(controlError || "App controls are not available.", true);
   currentApp = appId;
+  const meta = APP_META[appId] || { mark: app.name.charAt(0), className: "" };
   elements.dialogTitle.textContent = app.name;
-  elements.dialogAppMark.textContent = app.name.charAt(0);
-  elements.dialogAppMark.className = `app-mark ${appId === "sftpgo" ? "app-mark-files" : "app-mark-chat"}`;
-  document.querySelectorAll("[data-config-app]").forEach((section) => { section.hidden = section.dataset.configApp !== appId; });
+  elements.dialogAppMark.textContent = meta.mark;
+  elements.dialogAppMark.className = `app-mark ${meta.className}`;
+  document.querySelectorAll("[data-config-app]").forEach((section) => {
+    section.hidden = section.dataset.configApp !== appId;
+    section.querySelectorAll("input, select, textarea").forEach((field) => { field.disabled = section.hidden; });
+  });
   elements.disableAppButton.hidden = !app.installed || !app.service?.active;
   elements.jobPanel.hidden = true;
   elements.saveAppChanges.disabled = false;
-  if (appId === "sftpgo") fillSftpgoForm(app); else fillZncForm(app);
+  if (appId === "sftpgo") fillSftpgoForm(app);
+  else if (appId === "znc") fillZncForm(app);
+  else fillContainerAppForm(app);
   elements.appDialog.showModal();
 }
 
@@ -484,6 +541,52 @@ function fillZncForm(app) {
   renderEndpoints(elements.zncEndpoints, app.endpoints || []);
 }
 
+function setRuntimeBadge(badge, app) {
+  badge.textContent = app.service?.active ? "Running" : app.installed ? "Stopped" : "Ready to install";
+  badge.className = `state-badge ${app.service?.active ? "is-good" : ""}`;
+}
+
+function fillContainerAppForm(app) {
+  const settings = app.settings || {};
+  if (app.id === "uptime-kuma") {
+    setRuntimeBadge(elements.uptimeRuntimeBadge, app);
+    const publicOption = elements.uptimeAccess.querySelector('option[value="public"]');
+    publicOption.disabled = !settings.setupComplete;
+    elements.uptimeAccess.value = settings.access || "private";
+    elements.uptimeDomain.value = settings.domain || "";
+    renderEndpoints(elements.uptimeEndpoints, app.endpoints || []);
+  } else if (app.id === "ntfy") {
+    setRuntimeBadge(elements.ntfyRuntimeBadge, app);
+    elements.ntfyAccess.value = settings.access || "private";
+    elements.ntfyDomain.value = settings.domain || "";
+    elements.ntfyAdminUser.value = settings.adminUser || "tater";
+    elements.ntfyAdminPassword.value = "";
+    elements.ntfyInitialAdmin.hidden = Boolean(settings.hasAdmin);
+    renderEndpoints(elements.ntfyEndpoints, app.endpoints || []);
+  } else if (app.id === "forgejo") {
+    setRuntimeBadge(elements.forgejoRuntimeBadge, app);
+    elements.forgejoAccess.value = settings.access || "private";
+    elements.forgejoDomain.value = settings.domain || "";
+    elements.forgejoSshAccess.value = settings.sshAccess || "private";
+    elements.forgejoAdminUser.value = settings.adminUser || "tater";
+    elements.forgejoAdminEmail.value = settings.adminEmail || "";
+    elements.forgejoAdminPassword.value = "";
+    elements.forgejoInitialAdmin.hidden = Boolean(settings.hasAdmin);
+    renderEndpoints(elements.forgejoEndpoints, app.endpoints || []);
+  } else if (app.id === "matrix") {
+    setRuntimeBadge(elements.matrixRuntimeBadge, app);
+    elements.matrixAccess.value = settings.access || "private";
+    elements.matrixServerName.value = settings.serverName || "";
+    elements.matrixServerName.readOnly = Boolean(app.installed);
+    elements.matrixDomain.value = settings.domain || settings.serverName || "";
+    elements.matrixAdminUser.value = settings.adminUser || "tater";
+    elements.matrixAdminPassword.value = "";
+    elements.matrixInitialAdmin.hidden = Boolean(settings.hasAdmin);
+    renderEndpoints(elements.matrixEndpoints, app.endpoints || []);
+  }
+  syncConditionalFields();
+}
+
 function renderEndpoints(container, endpoints) {
   container.replaceChildren();
   if (!endpoints.length) return container.append(emptyRow("Private links appear after installation."));
@@ -507,6 +610,33 @@ function syncConditionalFields() {
   elements.webdavDomainField.classList.toggle("is-hidden", !https);
   if (!https) elements.cloudflareEnabled.checked = false;
   document.querySelectorAll(".cloudflare-field").forEach((field) => field.classList.toggle("is-hidden", !elements.cloudflareEnabled.checked));
+  [
+    [elements.uptimeAccess, elements.uptimeDomainField],
+    [elements.ntfyAccess, elements.ntfyDomainField],
+    [elements.forgejoAccess, elements.forgejoDomainField],
+    [elements.matrixAccess, elements.matrixDomainField]
+  ].forEach(([access, field]) => {
+    const isPublic = access.value === "public";
+    field.classList.toggle("is-hidden", !isPublic);
+    field.querySelector("input").required = isPublic;
+  });
+  const forgejoPublicSsh = elements.forgejoSshAccess.querySelector('option[value="public"]');
+  forgejoPublicSsh.disabled = elements.forgejoAccess.value !== "public";
+  if (forgejoPublicSsh.disabled && elements.forgejoSshAccess.value === "public") {
+    elements.forgejoSshAccess.value = "private";
+  }
+
+  const ntfyNeedsAdmin = currentApp === "ntfy" && !getApp("ntfy")?.settings?.hasAdmin;
+  elements.ntfyAdminUser.required = ntfyNeedsAdmin;
+  elements.ntfyAdminPassword.required = ntfyNeedsAdmin;
+  const forgejoNeedsAdmin = currentApp === "forgejo" && !getApp("forgejo")?.settings?.hasAdmin;
+  elements.forgejoAdminUser.required = forgejoNeedsAdmin;
+  elements.forgejoAdminEmail.required = forgejoNeedsAdmin;
+  elements.forgejoAdminPassword.required = forgejoNeedsAdmin;
+  const matrixNeedsAdmin = currentApp === "matrix" && !getApp("matrix")?.settings?.hasAdmin;
+  elements.matrixServerName.required = currentApp === "matrix";
+  elements.matrixAdminUser.required = matrixNeedsAdmin;
+  elements.matrixAdminPassword.required = matrixNeedsAdmin;
 }
 
 async function saveAppChanges(event) {
@@ -528,17 +658,55 @@ async function saveAppChanges(event) {
     if (elements.cloudflareEnabled.checked) {
       settings.cloudflare = { enabled: true, zone: elements.cloudflareZone.value.trim(), apiToken: elements.cloudflareToken.value.trim(), publicIpv4: elements.cloudflareIpv4.value.trim() };
     }
-  } else {
+  } else if (currentApp === "znc") {
     settings = { user: elements.zncUser.value.trim(), ircPort: elements.zncIrcPort.value, webPort: elements.zncWebPort.value };
     if (!app.settings?.hasConfig) {
       settings.adminUser = elements.zncAdminUser.value.trim();
       settings.adminPassword = elements.zncAdminPassword.value;
     }
+  } else if (currentApp === "uptime-kuma") {
+    settings = { access: elements.uptimeAccess.value, domain: elements.uptimeDomain.value.trim() };
+  } else if (currentApp === "ntfy") {
+    settings = { access: elements.ntfyAccess.value, domain: elements.ntfyDomain.value.trim(), adminUser: elements.ntfyAdminUser.value.trim() };
+    if (!app.settings?.hasAdmin) settings.adminPassword = elements.ntfyAdminPassword.value;
+  } else if (currentApp === "forgejo") {
+    settings = {
+      access: elements.forgejoAccess.value,
+      domain: elements.forgejoDomain.value.trim(),
+      sshAccess: elements.forgejoSshAccess.value,
+      adminUser: elements.forgejoAdminUser.value.trim(),
+      adminEmail: elements.forgejoAdminEmail.value.trim()
+    };
+    if (!app.settings?.hasAdmin) settings.adminPassword = elements.forgejoAdminPassword.value;
+    if (settings.sshAccess === "public") {
+      if (!window.confirm("Open Forgejo SSH on TCP 2222 to the public internet? Password login inside Forgejo remains disabled unless you configure it separately.")) return;
+      settings.confirmPublicSsh = true;
+    }
+  } else if (currentApp === "matrix") {
+    settings = {
+      access: elements.matrixAccess.value,
+      domain: elements.matrixDomain.value.trim(),
+      serverName: elements.matrixServerName.value.trim(),
+      adminUser: elements.matrixAdminUser.value.trim()
+    };
+    if (!app.settings?.hasAdmin) settings.adminPassword = elements.matrixAdminPassword.value;
+  } else {
+    return showToast("This app is not managed by the current Control Center.", true);
+  }
+  if (settings.access === "public") {
+    const detail = currentApp === "matrix"
+      ? "This will publish Matrix client and federation endpoints through Caddy. Continue?"
+      : `This will make ${app.name} reachable through its HTTPS hostname. Continue?`;
+    if (!window.confirm(detail)) return;
+    settings.confirmPublicExposure = true;
   }
   try {
     await runJob("configure-app", { app: currentApp, settings }, `Configuring ${app.name}`);
     elements.cloudflareToken.value = "";
     elements.zncAdminPassword.value = "";
+    elements.ntfyAdminPassword.value = "";
+    elements.forgejoAdminPassword.value = "";
+    elements.matrixAdminPassword.value = "";
     await refreshControl(true);
     closeAppDialog();
     showToast(`${app.name} is ready.`);
@@ -614,7 +782,7 @@ async function addDevice(event) {
   event.preventDefault();
   await withBusy(elements.deviceForm, async () => {
     try {
-      const result = await requestApi("/api/devices", { method: "POST", body: { person: elements.personName.value.trim(), name: elements.deviceName.value.trim(), type: elements.deviceType.value } });
+      const result = await requestApi("/api/devices", { method: "POST", body: { person: elements.personName.value.trim(), name: elements.deviceName.value.trim(), type: elements.deviceType.value, access: selectedDeviceAccess(elements.deviceAccessMode, elements.deviceServiceChoices) } });
       state = normalizeState(result.state);
       const config = String(result.enrollment?.wireguardConfig || "");
       if (!config) throw new Error("The VPS did not return a WireGuard configuration.");
@@ -714,11 +882,76 @@ async function requestApi(path, options = {}) {
     request.headers["Content-Type"] = "application/json";
     request.body = JSON.stringify(options.body);
   }
+  if (!["GET", "HEAD"].includes(request.method)) request.headers["X-Tater-CSRF"] = csrfToken;
+  request.credentials = "same-origin";
   const response = await fetch(path, request);
   let payload = {};
   try { payload = await response.json(); } catch { payload = {}; }
   if (!response.ok) throw new Error(payload.error || `Request failed with status ${response.status}`);
   return payload;
+}
+
+function renderServiceChoices(container, mode, selected = []) {
+  container.replaceChildren();
+  container.hidden = mode === "all";
+  if (mode === "all") return;
+  const names = Object.keys(state.accessRoutes || {});
+  if (!names.length) container.append(emptyRow("Add a home service before granting access."));
+  names.forEach((name) => {
+    const label = document.createElement("label");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = name;
+    input.checked = selected.includes(name);
+    label.append(input, document.createTextNode(name));
+    container.append(label);
+  });
+}
+
+function selectedDeviceAccess(mode, choices) {
+  return {mode: mode.value, services: [...choices.querySelectorAll("input:checked")].map((input) => input.value)};
+}
+
+function openDevicePermissions(device) {
+  editingDeviceId = device.id;
+  elements.permissionsTitle.textContent = `${device.name || "Device"} access`;
+  elements.permissionsMode.value = device.access?.mode || "all";
+  renderServiceChoices(elements.permissionsChoices, elements.permissionsMode.value, device.access?.services || []);
+  elements.permissionsDialog.showModal();
+}
+
+async function saveDevicePermissions(event) {
+  event.preventDefault();
+  await withBusy(elements.permissionsForm, async () => {
+    try {
+      state = normalizeState(await requestApi(`/api/devices/${encodeURIComponent(editingDeviceId)}/access`, {
+        method: "POST", body: {access: selectedDeviceAccess(elements.permissionsMode, elements.permissionsChoices)}
+      }));
+      elements.permissionsDialog.close();
+      renderTunnel();
+      showToast("Device access updated. Previous connections were closed.");
+    } catch (error) { showToast(error.message, true); }
+  });
+}
+
+function renderSecurityHistory(events) {
+  elements.securityHistory.replaceChildren();
+  if (!events.length) return elements.securityHistory.append(emptyRow("No security events recorded yet."));
+  events.slice(-50).reverse().forEach((event) => {
+    const labels = {"pairing.opened": "Pairing opened", "pairing.expired": "Pairing expired", "pairing.failed": "Pairing rejected", "pairing.completed": "VPS paired", "device.added": "Device approved", "device.revoked": "Device revoked", "device.permissions": "Device access changed", "service.saved": "Home service saved", "service.removed": "Home service removed", "tunnel.reset": "Tunnel reset", "configure-app": "App configured", "service-action": "App state changed", "security-audit": "Security audit", "update-vps": "VPS update scheduled"};
+    const row = document.createElement("div");
+    row.className = "security-event";
+    const time = document.createElement("time");
+    time.textContent = new Date(event.time).toLocaleString();
+    const detail = document.createElement("span");
+    const device = state.devices.find((item) => item.id === event.target);
+    const target = device?.name || event.target;
+    detail.textContent = `${labels[event.event] || "Security event"}${target ? ` / ${target}` : ""}`;
+    const outcome = document.createElement("strong");
+    outcome.textContent = event.outcome;
+    row.append(time, detail, outcome);
+    elements.securityHistory.append(row);
+  });
 }
 
 async function withBusy(target, operation) {

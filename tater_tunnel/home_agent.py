@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
+import functools
 import ipaddress
 import json
 import mimetypes
@@ -29,6 +32,7 @@ from .access_forward import (
     AccessForwardManager,
 )
 from .config_store import ConfigStore
+from .security import BoundedRequests, BrowserSessions, SecurityHistory, device_access, trusted_browser_request, read_request_body
 from .wireguard import KeyPair, WireGuardKeyProvider
 from .wireguard_runtime import (
     WIREGUARD_MTU,
@@ -41,6 +45,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 STATE_PATH = PROJECT_ROOT / ".tater_tunnel" / "home-agent.json"
 WIREGUARD_CONFIG_PATH = PROJECT_ROOT / ".tater_tunnel" / "wireguard" / "home-agent.conf"
 VALID_DEVICE_TYPES = {"Phone", "Laptop", "Tablet", "Desktop"}
+STATIC_FILES = {"index.html", "app.js", "qr.js", "styles.css"}
+STATIC_ASSETS = {"tater-logo-primary.png", "tater-vps-mascot.png"}
 API_MAX_BODY_BYTES = 64 * 1024
 REQUEST_SOCKET_TIMEOUT_SECONDS = 30
 VPS_MUTATION_TIMEOUT_SECONDS = 30
@@ -57,6 +63,14 @@ class AgentError(Exception):
         super().__init__(message)
         self.status = status
         self.message = message
+
+
+def synchronized_home(method):
+    @functools.wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self._state_lock:
+            return method(self, *args, **kwargs)
+    return wrapped
 
 
 def is_cloudflare_1010_response(message: str) -> bool:
@@ -82,12 +96,15 @@ class HomeAgentService:
         self.key_provider = key_provider or WireGuardKeyProvider()
         self.vps_client = vps_client or VpsAgentClient()
         self.admin_port = admin_port
+        self._state_lock = threading.RLock()
+        self.history = SecurityHistory(self.store.path.parent / "home-security-events.json")
         self.access_manager = access_manager or AccessForwardManager()
         self.wireguard_runtime = wireguard_runtime or build_wireguard_client_runtime(
             "config", WIREGUARD_CONFIG_PATH, "tater-home"
         )
         self._restore_wireguard_state()
 
+    @synchronized_home
     def state(self) -> dict[str, Any]:
         state = self.store.load()
         state.setdefault("homeAgent", {})["accessForwarding"] = self.access_manager.sync(
@@ -95,6 +112,7 @@ class HomeAgentService:
         )
         return self._public_state(state)
 
+    @synchronized_home
     def pair_vps(self, payload: dict[str, Any]) -> dict[str, Any]:
         vps = str(payload.get("vpsAddress") or payload.get("vps") or "").strip()
         pairing_code = str(payload.get("pairingCode") or "").strip()
@@ -116,16 +134,7 @@ class HomeAgentService:
                 },
             },
         )
-        management = claim.get("management") or {}
-        management_url = str(management.get("url") or "").strip()
-        management_token = str(management.get("token") or "").strip()
-        vps_wireguard = claim.get("vpsWireGuard") or {}
-        if not management_url.startswith("http://10.88.0.1:"):
-            raise AgentError(HTTPStatus.BAD_GATEWAY, "VPS did not return its private management address")
-        if not management_token:
-            raise AgentError(HTTPStatus.BAD_GATEWAY, "VPS did not return a management credential")
-        if not vps_wireguard.get("publicKey"):
-            raise AgentError(HTTPStatus.BAD_GATEWAY, "VPS did not return its WireGuard public key")
+        management_url, management_token, vps_wireguard = validate_claim_response(claim)
 
         state = self.store.load()
         now = utc_now()
@@ -164,8 +173,10 @@ class HomeAgentService:
                 "message": error.message,
             }
         state["homeAgent"]["accessForwarding"] = self.access_manager.sync(self.access_routes(state))
+        self.history.record("pairing.completed")
         return self._with_state(self.store.save(state))
 
+    @synchronized_home
     def check_health(self) -> dict[str, Any]:
         state = self.store.load()
         if not state.get("paired"):
@@ -230,6 +241,17 @@ class HomeAgentService:
             self._management_url(state), job_id, self._management_token(state)
         )
 
+    def security_events(self):
+        entries = self.history.entries()
+        state = self.store.load()
+        if state.get("paired"):
+            remote = self.vps_client._request(
+                "GET", self._management_url(state), "/api/security/events",
+                headers=management_headers(self._management_token(state)), timeout=5,
+            )
+            entries += remote.get("events", [])
+        return {"events": sorted(entries, key=lambda item: item.get("time", ""))[-500:]}
+
     @staticmethod
     def _require_paired_for_control(state: dict[str, Any]) -> None:
         if not state.get("paired"):
@@ -248,6 +270,7 @@ class HomeAgentService:
             "accessForwarding": self.access_manager.diagnostics(),
         }
 
+    @synchronized_home
     def add_device(self, payload: dict[str, Any]) -> dict[str, Any]:
         state = self.store.load()
         if not state.get("paired"):
@@ -271,6 +294,7 @@ class HomeAgentService:
             "status": "Approved",
             "lastSeen": "Just now",
             "createdAt": now,
+            "access": self._normalize_device_access(payload.get("access"), state),
             "wireguard": {
                 "publicKey": keypair.public_key,
                 "allowedIp": self._next_device_ip(state),
@@ -281,11 +305,14 @@ class HomeAgentService:
         state.setdefault("devices", []).insert(0, device)
         state["lastCheck"] = now
         saved = self.store.save(state)
+        self.access_manager.sync(self.access_routes(saved))
+        self.history.record("device.added", device["id"])
         return {
             "state": self._public_state(saved),
             "enrollment": self._enrollment_payload(device, keypair, saved),
         }
 
+    @synchronized_home
     def revoke_device(self, device_id: str) -> dict[str, Any]:
         state = self.store.load()
         original_count = len(state.get("devices", []))
@@ -294,8 +321,32 @@ class HomeAgentService:
             raise AgentError(HTTPStatus.NOT_FOUND, "Device not found")
         self._sync_remove_peer(state, device_id)
         state["lastCheck"] = utc_now()
+        self.access_manager.sync(self.access_routes(state))
+        self.history.record("device.revoked", device_id)
         return self._with_state(self.store.save(state))
 
+    @synchronized_home
+    def update_device_access(self, device_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        state = self.store.load()
+        device = next((item for item in state.get("devices", []) if item.get("id") == device_id), None)
+        if not device:
+            raise AgentError(HTTPStatus.NOT_FOUND, "Device not found")
+        device["access"] = self._normalize_device_access(payload.get("access"), state)
+        self.access_manager.sync(self.access_routes(state))
+        self.history.record("device.permissions", device_id)
+        return self._with_state(self.store.save(state))
+
+    @staticmethod
+    def _normalize_device_access(value, state):
+        try:
+            access = device_access(value)
+        except ValueError as error:
+            raise AgentError(HTTPStatus.BAD_REQUEST, str(error)) from error
+        if set(access["services"]) - set(state.get("accessRoutes") or {}):
+            raise AgentError(HTTPStatus.BAD_REQUEST, "A selected home service does not exist")
+        return access
+
+    @synchronized_home
     def add_access_route(self, payload: dict[str, Any]) -> dict[str, Any]:
         state = self.store.load()
         if not state.get("paired"):
@@ -310,7 +361,7 @@ class HomeAgentService:
         if is_local_admin_target(target_host, target_port, self.admin_port):
             raise AgentError(HTTPStatus.BAD_REQUEST, "The Home Agent control panel cannot be shared")
 
-        routes = self.access_routes(state)
+        routes = deepcopy(state.get("accessRoutes") or {})
         current = routes.get(name) or {}
         requested_port = payload.get("accessPort") or current.get("accessPort")
         access_port = (
@@ -337,7 +388,8 @@ class HomeAgentService:
         }
         state["accessRoutes"] = routes
         state["lastCheck"] = utc_now()
-        state.setdefault("homeAgent", {})["accessForwarding"] = self.access_manager.sync(routes)
+        state.setdefault("homeAgent", {})["accessForwarding"] = self.access_manager.sync(self.access_routes(state))
+        self.history.record("service.saved", name)
         return self._with_state(self.store.save(state))
 
     def test_access_route(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -351,26 +403,51 @@ class HomeAgentService:
             "result": test_access_target(route),
         }
 
+    @synchronized_home
     def remove_access_route(self, name: str) -> dict[str, Any]:
         state = self.store.load()
         route_name = normalize_route_name(name)
-        routes = self.access_routes(state)
+        routes = deepcopy(state.get("accessRoutes") or {})
         if route_name not in routes:
             raise AgentError(HTTPStatus.NOT_FOUND, "Service not found")
         routes.pop(route_name)
+        for device in state.get("devices", []):
+            access = device.get("access")
+            if isinstance(access, dict):
+                access["services"] = [item for item in access.get("services", []) if item != route_name]
         state["accessRoutes"] = routes
         state["lastCheck"] = utc_now()
-        state.setdefault("homeAgent", {})["accessForwarding"] = self.access_manager.sync(routes)
+        state.setdefault("homeAgent", {})["accessForwarding"] = self.access_manager.sync(self.access_routes(state))
+        self.history.record("service.removed", route_name)
         return self._with_state(self.store.save(state))
 
     def access_routes(self, state: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
-        routes = (state or self.store.load()).get("accessRoutes") or {}
-        return {
+        current = state if state is not None else self.store.load()
+        routes = current.get("accessRoutes") or {}
+        authorized = {}
+        for device in current.get("devices", []):
+            try:
+                access = device_access(device.get("access"), legacy=True)
+                allowed = ipaddress.ip_interface(device["wireguard"]["allowedIp"])
+                address = str(allowed.ip)
+            except (ValueError, KeyError, TypeError):
+                continue
+            if allowed.network.prefixlen != 32 or ipaddress.ip_address(address) not in TUNNEL_NETWORK or not 10 <= int(address.split(".")[-1]) <= 249:
+                continue
+            authorized[address] = access
+        result = {
             str(name): deepcopy(route)
             for name, route in routes.items()
             if isinstance(route, dict)
         }
+        for name, route in result.items():
+            route["allowedSources"] = [
+                address for address, access in authorized.items()
+                if access["mode"] == "all" or name in access["services"]
+            ]
+        return result
 
+    @synchronized_home
     def reset(self) -> dict[str, Any]:
         self.access_manager.sync({})
         runtime = self.wireguard_runtime.reset()
@@ -380,6 +457,7 @@ class HomeAgentService:
             "transport": "wireguard",
             "message": "Home Agent tunnel state reset",
         }
+        self.history.record("tunnel.reset")
         return self._with_state(self.store.save(state))
 
     def _next_access_port(self, routes: dict[str, dict[str, Any]]) -> int:
@@ -513,6 +591,7 @@ class HomeAgentService:
         return summary
 
     def _apply_wireguard(self, state: dict[str, Any]) -> None:
+        validate_claim_response({"management": state.get("management"), "vpsWireGuard": (state.get("vpsAgent") or {}).get("wireguard")})
         try:
             state.setdefault("homeAgent", {})["runtime"] = self.wireguard_runtime.apply(
                 state, self._endpoint(state)
@@ -524,6 +603,7 @@ class HomeAgentService:
         state = self.store.load()
         try:
             if state.get("paired"):
+                validate_claim_response({"management": state.get("management"), "vpsWireGuard": (state.get("vpsAgent") or {}).get("wireguard")})
                 runtime = self.wireguard_runtime.apply(state, self._endpoint(state))
                 action = "restored"
             else:
@@ -534,7 +614,7 @@ class HomeAgentService:
                 "transport": "wireguard",
                 "startupAction": action,
             }
-        except WireGuardRuntimeError as error:
+        except (WireGuardRuntimeError, AgentError) as error:
             state.setdefault("homeAgent", {})["runtime"] = {
                 "backend": getattr(self.wireguard_runtime, "backend", "unknown"),
                 "transport": "wireguard",
@@ -685,13 +765,14 @@ class VpsAgentClient:
             raise AgentError(HTTPStatus.BAD_GATEWAY, f"VPS Agent is not reachable: {error}") from error
 
 
-class HomeAgentServer(ThreadingHTTPServer):
+class HomeAgentServer(BoundedRequests, ThreadingHTTPServer):
     def __init__(self, server_address: tuple[str, int], static_root: Path, service: HomeAgentService):
         self._forward_stop = threading.Event()
         super().__init__(server_address, HomeAgentHandler)
         self.static_root = static_root
         self.service = service
-        loop = AccessForwardLoop(self.service.access_manager, self.service.access_routes)
+        self.browser_sessions = BrowserSessions()
+        loop = AccessForwardLoop(self.service.access_manager, self.service.access_routes, self.service._state_lock)
         self._forward_thread = threading.Thread(
             target=loop.run,
             args=(self._forward_stop,),
@@ -721,6 +802,26 @@ class HomeAgentHandler(BaseHTTPRequestHandler):
         if not self._require_local_request():
             return
         path = urlparse(self.path).path
+        if path == "/healthz":
+            self._send_json({"status": "ok"})
+            return
+        if path == "/api/status":
+            state = self.server.service.store.load()
+            self._send_json({"devices": [{"wireguard": {"live": {
+                key: (device.get("wireguard", {}).get("live") or {}).get(key, 0)
+                for key in ("connected", "transferRxBytes", "transferTxBytes")
+            }}} for device in state.get("devices", [])]})
+            return
+        if path == "/api/session":
+            csrf = self.server.browser_sessions.validate(self.headers.get("Cookie"))
+            cookie = None
+            if not csrf:
+                token, csrf = self.server.browser_sessions.create()
+                cookie = f"tater_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800"
+            self._send_json({"csrfToken": csrf}, cookie=cookie)
+            return
+        if path.startswith("/api/") and not self._require_browser_session():
+            return
         if path.startswith("/api/control/") and not self._require_loopback_control():
             return
         try:
@@ -730,6 +831,8 @@ class HomeAgentHandler(BaseHTTPRequestHandler):
                 self._send_json(self.server.service.wireguard_diagnostics())
             elif path == "/api/control/overview":
                 self._send_json(self.server.service.control_overview())
+            elif path == "/api/security/events":
+                self._send_json(self.server.service.security_events())
             elif path.startswith("/api/control/jobs/"):
                 job_id = unquote(path.removeprefix("/api/control/jobs/"))
                 self._send_json(self.server.service.control_job(job_id))
@@ -744,6 +847,8 @@ class HomeAgentHandler(BaseHTTPRequestHandler):
         if not self._require_local_request():
             return
         path = urlparse(self.path).path
+        if not self._require_browser_session(mutation=True):
+            return
         if path.startswith("/api/control/") and not self._require_loopback_control():
             return
         try:
@@ -754,6 +859,9 @@ class HomeAgentHandler(BaseHTTPRequestHandler):
                 self._send_json(self.server.service.check_health())
             elif path == "/api/devices":
                 self._send_json(self.server.service.add_device(payload), HTTPStatus.CREATED)
+            elif path.startswith("/api/devices/") and path.endswith("/access"):
+                device_id = unquote(path[len("/api/devices/"):-len("/access")])
+                self._send_json(self.server.service.update_device_access(device_id, payload))
             elif path == "/api/access-routes":
                 self._send_json(self.server.service.add_access_route(payload), HTTPStatus.CREATED)
             elif path == "/api/access-routes/test":
@@ -777,6 +885,8 @@ class HomeAgentHandler(BaseHTTPRequestHandler):
         if not self._require_local_request():
             return
         path = urlparse(self.path).path
+        if not self._require_browser_session(mutation=True):
+            return
         try:
             if path.startswith("/api/access-routes/"):
                 name = unquote(path.removeprefix("/api/access-routes/"))
@@ -802,10 +912,21 @@ class HomeAgentHandler(BaseHTTPRequestHandler):
             raise AgentError(HTTPStatus.BAD_REQUEST, "Transfer-Encoding is not supported")
         if self.headers.get_content_type() != "application/json":
             raise AgentError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "API requests must use application/json")
+        if len(self.headers.get_all("Content-Length", [])) > 1:
+            raise AgentError(HTTPStatus.BAD_REQUEST, "Duplicate Content-Length is not supported")
         length = parse_content_length(self.headers.get("Content-Length", "0"))
         if length > API_MAX_BODY_BYTES:
             raise AgentError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Request body is too large")
-        payload = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+        try:
+            raw = read_request_body(self.rfile, self.connection, length)
+        except TimeoutError as error:
+            raise AgentError(HTTPStatus.REQUEST_TIMEOUT, "Request body timed out") from error
+        if len(raw) != length:
+            raise AgentError(HTTPStatus.BAD_REQUEST, "Request body is incomplete")
+        try:
+            payload = json.loads(raw.decode("utf-8")) if length else {}
+        except UnicodeDecodeError as error:
+            raise AgentError(HTTPStatus.BAD_REQUEST, "Request body must use UTF-8") from error
         if not isinstance(payload, dict):
             raise AgentError(HTTPStatus.BAD_REQUEST, "Request body must be a JSON object")
         return payload
@@ -816,11 +937,24 @@ class HomeAgentHandler(BaseHTTPRequestHandler):
             client_address = ipaddress.ip_address(client)
         except ValueError:
             client_address = None
-        if client_address and client_address in TUNNEL_NETWORK:
-            self._send_error(HTTPStatus.FORBIDDEN, "Home Agent controls are not available through the tunnel")
+        if not client_address or not client_address.is_loopback:
+            self._send_error(HTTPStatus.FORBIDDEN, "Open the Home Agent controls on its local computer")
             return False
-        if not is_allowed_home_agent_host(self.headers.get("Host", "")):
+        if len(self.headers.get_all("Host", [])) != 1 or not is_allowed_home_agent_host(self.headers.get("Host", "")):
             self._send_error(HTTPStatus.MISDIRECTED_REQUEST, "Home Agent is only available on the local network")
+            return False
+        if not trusted_browser_request(self.headers, self.headers.get("Host", "")):
+            self._send_error(HTTPStatus.FORBIDDEN, "Cross-origin dashboard requests are blocked")
+            return False
+        return True
+
+    def _require_browser_session(self, mutation=False):
+        if not trusted_browser_request(self.headers, self.headers.get("Host", ""), mutation=mutation):
+            self._send_error(HTTPStatus.FORBIDDEN, "Dashboard origin is not allowed")
+            return False
+        csrf = self.headers.get("X-Tater-CSRF", "") if mutation else None
+        if not self.server.browser_sessions.validate(self.headers.get("Cookie"), csrf):
+            self._send_error(HTTPStatus.UNAUTHORIZED, "Dashboard session expired. Reload this page.")
             return False
         return True
 
@@ -839,7 +973,13 @@ class HomeAgentHandler(BaseHTTPRequestHandler):
 
     def _serve_static(self, path: str) -> None:
         relative = "index.html" if path in {"", "/"} else path.lstrip("/")
+        if relative not in STATIC_FILES and relative not in {f"assets/{name}" for name in STATIC_ASSETS}:
+            self._send_error(HTTPStatus.NOT_FOUND, "File not found")
+            return
         target = (self.server.static_root / unquote(relative)).resolve()
+        if target != self.server.static_root.resolve() / relative:
+            self._send_error(HTTPStatus.NOT_FOUND, "File not found")
+            return
         try:
             target.relative_to(self.server.static_root.resolve())
         except ValueError:
@@ -856,17 +996,20 @@ class HomeAgentHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
+    def _send_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK, cookie=None) -> None:
         body = json.dumps(payload, sort_keys=True).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Length", str(len(body)))
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self.wfile.write(body)
 
     def _send_error(self, status: HTTPStatus, message: str) -> None:
+        self.close_connection = True
         self._send_json({"error": message}, status)
 
     def _send_unexpected_error(self, error: Exception) -> None:
@@ -888,6 +1031,46 @@ class HomeAgentHandler(BaseHTTPRequestHandler):
 
 def management_headers(token: str) -> dict[str, str]:
     return {"X-Tater-Management-Token": token}
+
+
+def validate_claim_response(claim):
+    management = claim.get("management") or {}
+    wireguard = claim.get("vpsWireGuard") or {}
+    if not isinstance(management, dict) or not isinstance(wireguard, dict):
+        raise AgentError(HTTPStatus.BAD_GATEWAY, "VPS returned invalid pairing settings")
+    value = str(management.get("url") or "")
+    if len(value) > 256 or any(ord(character) < 33 for character in value):
+        raise AgentError(HTTPStatus.BAD_GATEWAY, "VPS returned an invalid private management address")
+    try:
+        parsed = urlparse(value)
+        valid = (
+            parsed.scheme == "http" and parsed.hostname == "10.88.0.1"
+            and parsed.port is not None and 1 <= parsed.port <= 65535
+            and not parsed.username and not parsed.password
+            and parsed.path in {"", "/"} and not parsed.query and not parsed.fragment
+        )
+    except ValueError:
+        valid = False
+    if not valid:
+        raise AgentError(HTTPStatus.BAD_GATEWAY, "VPS did not return its private management address")
+    token = management.get("token")
+    if not isinstance(token, str) or not 1 <= len(token) <= 512 or any(ord(c) < 33 for c in token):
+        raise AgentError(HTTPStatus.BAD_GATEWAY, "VPS returned an invalid management credential")
+    try:
+        public_key = base64.b64decode(str(wireguard.get("publicKey") or ""), validate=True)
+        if len(public_key) != 32 or not any(public_key):
+            raise ValueError()
+        port = int(wireguard.get("listenPort") or 51888)
+        if not 1 <= port <= 65535:
+            raise ValueError()
+        for key, expected in (("network", "10.88.0.0/24"), ("homeAllowedIp", "10.88.0.2/32"), ("address", "10.88.0.1/24")):
+            if wireguard.get(key, expected) != expected:
+                raise ValueError()
+    except (ValueError, TypeError, binascii.Error) as error:
+        raise AgentError(HTTPStatus.BAD_GATEWAY, "VPS returned invalid private WireGuard settings") from error
+    normalized = {"publicKey": base64.b64encode(public_key).decode("ascii"), "listenPort": port,
+                  "network": "10.88.0.0/24", "homeAllowedIp": "10.88.0.2/32", "address": "10.88.0.1/24"}
+    return value.rstrip("/"), token, normalized
 
 
 def parse_content_length(value: Any) -> int:
@@ -989,19 +1172,22 @@ def test_access_target(route: dict[str, Any]) -> dict[str, Any]:
 
 def is_allowed_home_agent_host(value: str) -> bool:
     try:
-        hostname = (urlparse(f"//{value}").hostname or "").lower()
+        parsed = urlparse(f"//{value}")
+        hostname = (parsed.hostname or "").lower()
+        port = parsed.port
     except ValueError:
+        return False
+    if parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
         return False
     if not hostname or hostname == ACCESS_BIND_ADDRESS:
         return False
-    if hostname in {"localhost", "0.0.0.0", "::"}:
+    if hostname == "localhost":
         return True
     try:
         address = ipaddress.ip_address(hostname)
     except ValueError:
-        local_names = {socket.gethostname().lower(), socket.getfqdn().lower()}
-        return hostname in local_names or bool(resolve_host_addresses(hostname) & local_interface_addresses())
-    return bool(address.is_loopback or address.is_link_local or address.is_private)
+        return False
+    return address.is_loopback
 
 
 @lru_cache(maxsize=64)

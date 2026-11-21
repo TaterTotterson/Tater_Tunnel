@@ -45,7 +45,7 @@ class ConfigStore:
 
     def save(self, state: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             merged = self._merge_defaults(state)
             fd, temp_name = tempfile.mkstemp(
                 prefix=f".{self.path.name}.",

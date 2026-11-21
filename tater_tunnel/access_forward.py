@@ -5,8 +5,11 @@ import socket
 import socketserver
 import threading
 import time
+from collections import Counter
 from copy import deepcopy
+from contextlib import nullcontext
 from typing import Any
+from .security import BoundedRequests
 
 
 ACCESS_BIND_ADDRESS = "10.88.0.2"
@@ -14,18 +17,42 @@ ACCESS_PORT_MIN = 30000
 ACCESS_PORT_MAX = 30999
 
 
-class _ThreadingTCPServer(socketserver.ThreadingTCPServer):
+class _ForwardingAccess:
+    def verify_request(self, request, client_address):
+        return client_address[0] in self.allowed_sources
+
+    def shutdown_active(self):
+        with self.active_lock:
+            for connection in list(self.active_connections):
+                try:
+                    connection.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+
+class _ThreadingTCPServer(_ForwardingAccess, BoundedRequests, socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
 
-class _ThreadingUDPServer(socketserver.ThreadingUDPServer):
+class _ThreadingUDPServer(_ForwardingAccess, BoundedRequests, socketserver.ThreadingUDPServer):
     allow_reuse_address = True
     daemon_threads = True
 
 
 class _TCPForwardHandler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
+        with self.server.active_lock:
+            if self.server.stopping:
+                return
+            self.server.active_connections.add(self.request)
+        try:
+            self._forward()
+        finally:
+            with self.server.active_lock:
+                self.server.active_connections.discard(self.request)
+
+    def _forward(self):
         target = self.server.target  # type: ignore[attr-defined]
         try:
             upstream = socket.create_connection(target, timeout=10)
@@ -36,15 +63,21 @@ class _TCPForwardHandler(socketserver.BaseRequestHandler):
             self.request.setblocking(False)
             upstream.setblocking(False)
             sockets = [self.request, upstream]
+            last_activity = time.monotonic()
             while True:
+                if self.server.stopping:
+                    return
                 try:
-                    readable, _, exceptional = select.select(sockets, [], sockets, 30)
+                    readable, _, exceptional = select.select(sockets, [], sockets, 1)
                 except OSError:
                     return
                 if exceptional:
                     return
                 if not readable:
+                    if time.monotonic() - last_activity >= 300:
+                        return
                     continue
+                last_activity = time.monotonic()
                 for source in readable:
                     destination = upstream if source is self.request else self.request
                     try:
@@ -81,6 +114,8 @@ class AccessForwardManager:
         self._lock = threading.RLock()
         self._servers: dict[str, tuple[dict[str, Any], socketserver.BaseServer, threading.Thread]] = {}
         self._errors: dict[str, str] = {}
+        self._connection_lock = threading.Lock()
+        self._connection_counts = Counter()
 
     def sync(self, routes: dict[str, dict[str, Any]]) -> dict[str, Any]:
         normalized = {
@@ -148,6 +183,14 @@ class AccessForwardManager:
 
         server = server_type((self.bind_address, access_port), handler_type)
         server.target = target  # type: ignore[attr-defined]
+        server._connection_lock = self._connection_lock
+        server._connection_counts = self._connection_counts
+        server.max_connections = 256
+        server.max_connections_per_client = 32
+        server.allowed_sources = frozenset(route.get("allowedSources") or [])
+        server.active_connections = set()
+        server.active_lock = threading.Lock()
+        server.stopping = False
         thread = threading.Thread(
             target=server.serve_forever,
             kwargs={"poll_interval": 0.5},
@@ -159,6 +202,8 @@ class AccessForwardManager:
 
     def _stop_locked(self, name: str) -> None:
         _, server, thread = self._servers.pop(name)
+        server.stopping = True
+        server.shutdown_active()
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
@@ -170,20 +215,23 @@ class AccessForwardManager:
             int(route.get("accessPort") or 0),
             str(route.get("targetHost") or ""),
             int(route.get("targetPort") or 0),
+            tuple(sorted(route.get("allowedSources") or [])),
         )
 
 
 class AccessForwardLoop:
     """Retries listener binding while a native tunnel interface is coming up."""
 
-    def __init__(self, manager: AccessForwardManager, route_provider):
+    def __init__(self, manager: AccessForwardManager, route_provider, policy_lock=None):
         self.manager = manager
         self.route_provider = route_provider
+        self.policy_lock = policy_lock
 
     def run(self, stop_event: threading.Event) -> None:
         while not stop_event.is_set():
             try:
-                self.manager.sync(self.route_provider())
+                with self.policy_lock if self.policy_lock is not None else nullcontext():
+                    self.manager.sync(self.route_provider())
             except Exception:
                 pass
             stop_event.wait(2)

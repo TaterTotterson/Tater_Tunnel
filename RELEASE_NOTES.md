@@ -1,30 +1,52 @@
-# Tater Tunnel v0.4.0
+# Tater Tunnel v0.5.0
 
-This release adds guarded VPS updates directly to the Control Center and makes
-CPU activity easier to diagnose.
+This release hardens the tunnel and expands the Control Center with four
+allow-listed VPS apps.
 
-## VPS Updates
+## Tunnel Security
 
-- The Updates view can install the newest official stable VPS release without
-  an SSH session.
-- The updater accepts no repository, branch, tag, package, or shell input from
-  the browser.
-- Only stable semantic-version tags from the official Tater Tunnel repository
-  are considered, and the packaged version must match the selected tag.
-- Pairing, WireGuard peers, service routes, and optional-app settings are
-  preserved while managed proxy and firewall hardening is reapplied.
-- Update progress survives the VPS Agent and control-helper restart and is
-  reported back in the Home Agent UI.
+- Serve only approved UI assets; private state, source, dotfiles, and symlinks
+  cannot be downloaded through the Home Agent web server.
+- Require loopback access, a browser session, matching Origin, and CSRF tokens
+  for dashboard changes. macOS traffic counters and Docker health checks use
+  separate minimal status endpoints.
+- Expire unused pairing codes after 15 minutes without extending their deadline
+  on restart. Validate pairing responses before creating tunnel configuration.
+- Choose home services per device. Permission changes and revocation close
+  existing forwarded connections. Existing devices retain their prior access.
+- Bound API connections and forwarding workers across home services and close
+  idle TCP forwards after five minutes.
+- Verify signed VPS release archives against an installed Ed25519 key and
+  reject unsigned, modified, and older releases before running their code.
+- Keep privileged settings outside the unprivileged agent's writable state;
+  add a persistent container forwarding guard and IPv6 firewall checks.
+- Add credential-redacted security history and an independent network checker
+  for public access, ordinary peers, revocation, and reboot comparisons.
 
-## System Diagnostics
+## Managed Apps
 
-- The System view now lists the five busiest VPS processes with CPU and memory
-  usage so a high CPU reading can be traced without opening a general shell.
-- The dashboard shows one-minute system load beside the actual CPU utilization,
-  keeping the two measurements clear.
+- Install and manage Uptime Kuma, ntfy, Forgejo, and Matrix Synapse from the
+  Home Agent.
+- Choose WireGuard-only access or a dedicated public Caddy HTTPS hostname per
+  app. Raw container web ports remain private in both modes.
+- Use guarded defaults for administrators, registration, attachments, storage,
+  PostgreSQL, Git SSH, and Matrix federation.
+- Run version-pinned generated Compose definitions without accepting arbitrary
+  images, Compose files, or commands from the browser.
+- Audit managed app file modes, firewall rules, Caddy routes, and Docker port
+  bindings from the System view.
+- Start managed apps after WireGuard and the container firewall at boot;
+  preserve generated database credentials when an installation is interrupted.
 
-## First Update
+## Updating
 
-Install this release on the VPS once through the existing terminal setup menu.
-After `v0.4.0` is installed, later stable VPS updates can be applied from the
-Updates view.
+- Update the VPS Agent first, then the Home Agent. Existing pairing, devices,
+  and home service routes are preserved.
+- Open the dashboard on the Home Agent computer at `http://127.0.0.1:4173`.
+  Direct LAN dashboard access is now blocked. For a headless Home Agent, use
+  `ssh -L 4173:127.0.0.1:4173 YOUR_USER@HOME_AGENT_HOST`.
+- Existing devices retain their previous home service access. Use **Access**
+  beside a device to select individual services. These permissions do not
+  replace authentication for VPS-hosted apps.
+- The macOS app, Linux Docker image, and signed VPS update archive are built
+  from the same `v0.5.0` tag.

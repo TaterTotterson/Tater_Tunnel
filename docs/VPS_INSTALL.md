@@ -114,6 +114,9 @@ VPS URL: https://tunnel.example.com
 Pairing code: ABCDE-23456
 ```
 
+Unused pairing codes expire after 15 minutes, including across service
+restarts. Use **Reopen pairing** if installation took longer or the code expired.
+
 Enter those values in the local Home Agent. The public claim sends the Home
 Agent WireGuard public key. On success, the VPS:
 
@@ -149,6 +152,13 @@ newest official stable release. It preserves current schema-v2 state, rewrites
 Caddy to the bootstrap-only policy, repairs UFW rules, and restarts the private
 services. The updater does not accept a custom repository, branch, tag, package,
 or command from the browser.
+
+The managed updater requires the signed VPS archive, release manifest, and
+signature attached by the VPS release workflow. It verifies them against the
+public key already installed on the VPS, validates the archive digest and
+version, and rejects downgrades. Missing assets or invalid signatures stop the
+update before downloaded code runs. The one-command installer remains a manual
+recovery path; its initial download must come from a source you trust.
 
 For recovery or terminal maintenance, run the same one-command setup and choose
 `Update Tater Tunnel`. Choose to reopen pairing only when connecting a fresh
@@ -208,6 +218,82 @@ The audit exits nonzero when a required boundary is missing. It checks service
 sandboxing, private file modes, exact peer addresses, live WireGuard state,
 closed pairing, token-protected management, absent legacy relay endpoints,
 Caddy exposure, and UFW routing.
+
+It also checks active systemd isolation, root ownership of privileged settings
+and signing keys, IPv6 firewall handling, active firewall defaults, approved
+Docker bindings, and the persistent container forwarding guard. These local
+checks do not replace tests from outside the VPS.
+
+## Independent Network Checks
+
+Run these on a separate computer using a repository checkout. Public checks
+must run with WireGuard disconnected and outside the VPS:
+
+```bash
+python3 scripts/audit-network-boundary.py \
+  --role public --host tunnel.example.com \
+  --save-baseline before-reboot.json
+```
+
+This tests each DNS A/AAAA address for private management and application ports.
+Public HTTPS routes intentionally enabled for an app remain accessible.
+
+Connect an ordinary approved device and select a home service it may access:
+
+```bash
+python3 scripts/audit-network-boundary.py \
+  --role device --host 10.88.0.1 \
+  --allow 10.88.0.2:30000 --block 10.88.0.2:30001
+```
+
+Use actual ports shown by the Home Agent. The allowed service must be running,
+and the blocked service must be assigned to another device. After revoking the
+test device, keep its old profile active and check again:
+
+```bash
+python3 scripts/audit-network-boundary.py \
+  --role revoked --host 10.88.0.1 --block 10.88.0.2:30000
+```
+
+After a planned VPS reboot, rerun the local security audit and compare the
+public result from the same independent computer:
+
+```bash
+python3 scripts/audit-network-boundary.py \
+  --role public --host tunnel.example.com --baseline before-reboot.json
+```
+
+Reachability results describe the calling client. A disconnected or incorrectly
+configured client alone cannot prove that a device was revoked.
+
+## Managed Container Apps
+
+The Home Agent **Apps** view can install Uptime Kuma, ntfy, Forgejo, and Matrix
+Synapse. Docker and Compose are installed on demand. Tater Tunnel controls the
+image versions, generated configuration, container names, storage locations,
+host bindings, firewall rules, and Caddy routes; the browser cannot supply a
+custom image, Compose file, or command.
+
+App services start after Docker, the container firewall, and the VPS WireGuard
+interface. Generated database credentials are saved before startup, allowing an
+interrupted installation to be retried without changing its database password.
+
+Every app defaults to WireGuard-only access. Selecting public access requires a
+dedicated DNS hostname and confirmation, then publishes that hostname through
+Caddy on `443/tcp`. The raw app port remains bound only to loopback and
+`10.88.0.1`.
+
+| App | Private address | Managed defaults |
+| --- | --- | --- |
+| Uptime Kuma | `http://10.88.0.1:3001` | Public mode stays unavailable until private administrator setup is complete |
+| ntfy | `http://10.88.0.1:2586` | Anonymous access and signup disabled; bounded attachments |
+| Forgejo | `http://10.88.0.1:3000` | Registration disabled; separate private/public Git SSH choice on `2222/tcp` |
+| Matrix Synapse | `http://10.88.0.1:8008` | Internal PostgreSQL, registration disabled, permanent server name |
+
+Matrix public mode enables HTTPS client access and federation. TURN is not
+installed automatically, so reliable voice and video relay requires a separate
+future configuration. Disabling a managed app stops its containers and removes
+its public Caddy route and app-specific firewall access while retaining data.
 
 ## Optional ZNC
 

@@ -55,7 +55,8 @@ When logged in directly as root, omit `sudo`. The installer creates a normal
 sudo user and continues the installation in the same session.
 
 The final screen shows the VPS URL and one-time pairing code. Keep the code
-private.
+private. Unused codes expire after 15 minutes; use **Reopen pairing** for a
+fresh code.
 
 ### 2. Start The Home Agent
 
@@ -104,6 +105,13 @@ docker run -d \
 
 Then open `http://127.0.0.1:4173` on the Linux host.
 
+For a headless Home Agent, forward the dashboard over SSH and open the same
+localhost URL on your computer:
+
+```bash
+ssh -L 4173:127.0.0.1:4173 YOUR_USER@HOME_AGENT_HOST
+```
+
 Or use the included Compose configuration from a repository checkout:
 
 ```bash
@@ -146,9 +154,16 @@ moves inside WireGuard and the public pairing endpoint closes.
 ### 4. Add A Remote Device
 
 1. Select **Add Device** in the Home Agent.
-2. Name the device and generate its QR code.
+2. Name the device, select its home services, and generate its QR code.
 3. Scan the QR code with the WireGuard app.
 4. Activate the new WireGuard tunnel.
+
+Use **Access** beside a device to change its home service permissions. New
+devices default to selected services. **All current and future services** is
+an explicit broader option. Existing devices retain their previous access.
+Permission changes and revocation close existing forwarded connections.
+These controls cover forwarded home services; VPS-hosted apps retain their own
+WireGuard exposure and application login policies.
 
 Remote devices receive an address in `10.88.0.0/24` and can reach only the
 private tunnel network and configured services. Their normal internet traffic
@@ -183,20 +198,35 @@ After pairing, the Home Agent becomes a private VPS control center. It shows
 VPS CPU, memory, disk, uptime, devices, routes, app status, and WireGuard-only
 app addresses.
 
-The **Apps** view can install or reconfigure SFTPGo and ZNC with the same
-guarded settings as the terminal setup menu. SFTPGo protocol exposure, storage
-cap, WebDAV hostname, and optional one-time Cloudflare DNS setup are available
-there. ZNC owner, listeners, and initial administrator setup are available
-there as well.
+The **Apps** view manages SFTPGo, ZNC, Uptime Kuma, ntfy, Forgejo, and Matrix
+Synapse. SFTPGo protocol exposure, storage cap, WebDAV hostname, and optional
+one-time Cloudflare DNS setup are available there. ZNC owner, listeners, and
+initial administrator setup are available there as well.
+
+Uptime Kuma, ntfy, Forgejo, and Matrix run in version-pinned Docker containers.
+Docker is installed on demand. Their web ports always bind only to loopback and
+`10.88.0.1`. Each app starts WireGuard-only; selecting public access creates a
+dedicated Caddy HTTPS route while keeping the raw app port private.
 
 App changes run as background jobs on the VPS. Passwords and Cloudflare tokens
 are sent only through the private WireGuard management path and are not kept in
 job history.
 
+Managed defaults close self-registration, require an initial administrator
+where supported, and avoid public database listeners. Forgejo Git SSH has its
+own private/public choice. Matrix public mode enables federation; TURN for
+reliable voice and video calls is not installed by this release.
+
 The **Updates** view can install the newest official stable VPS release. The
 managed updater accepts no repository, branch, package, or shell input. It
 preserves pairing and service state, reapplies the managed security boundaries,
-and reports completion after the VPS Agent restarts.
+and reports completion after the VPS Agent restarts. VPS archives require an
+Ed25519-signed manifest verified against the installed release key before any
+downloaded code runs. Unsigned releases and downgrades are rejected.
+
+**System > Recent activity** shows bounded security history for pairing,
+devices, permissions, home services, app management, audits, and updates.
+Passwords, pairing codes, and tokens are excluded.
 
 ## Tunnel Addresses
 
@@ -262,6 +292,22 @@ from the public network.
 The setup also supports a total storage cap and a one-time Cloudflare API token
 for DNS-only records. The token is not saved.
 
+### Container Apps
+
+Install these from **Apps** in the Home Agent:
+
+| App | WireGuard address | Public option |
+| --- | --- | --- |
+| Uptime Kuma | `http://10.88.0.1:3001` | Dedicated Caddy HTTPS hostname after private first-run setup |
+| ntfy | `http://10.88.0.1:2586` | Dedicated Caddy HTTPS hostname |
+| Forgejo | `http://10.88.0.1:3000` | Caddy HTTPS; Git SSH is controlled separately on `2222/tcp` |
+| Matrix Synapse | `http://10.88.0.1:8008` | Caddy HTTPS with federation on `443/tcp` |
+
+Uptime Kuma must be installed privately first so its administrator can be
+created before public access is enabled. ntfy denies anonymous topics and caps
+attachments. Forgejo disables registration. Matrix uses an internal PostgreSQL
+container, disables registration, and treats its server name as permanent.
+
 ## Ports
 
 | Port | Exposure | Purpose |
@@ -275,7 +321,9 @@ for DNS-only records. The token is not saved.
 | `4173/tcp` | Localhost | Home Agent control panel |
 
 Optional public SFTP or FTP ports are opened only when selected during SFTPGo
-setup.
+setup. Managed container web ports `2586`, `3000`, `3001`, and `8008` remain
+WireGuard-only even when an app has a public Caddy hostname. Forgejo may open
+`2222/tcp` only when public Git SSH is explicitly selected.
 
 ## SSH Hardening
 
@@ -305,17 +353,25 @@ Keep the original root session open until the new key login succeeds.
 ## Security Model
 
 - Public HTTPS exposes only the landing page, mascot asset, and one-time claim.
-- Pairing disables itself after the Home Agent is claimed.
+- Pairing disables itself after the Home Agent is claimed or the code expires.
 - VPS management requires WireGuard source validation and a random management
   token.
-- The Home Agent UI accepts only local requests.
-- VPS app-management endpoints additionally require a loopback client on the
-  Home Agent computer.
+- The Home Agent UI and APIs require a loopback connection on the Home Agent
+  computer. Browser APIs use an eight-hour session, strict origin checks, and
+  CSRF protection for changes. Only approved UI assets are served.
 - Privileged app changes use a root-owned Unix socket and typed, allow-listed
   commands; there is no shell or arbitrary-command endpoint.
 - Private listeners bind to `10.88.0.2` and forward only to explicit targets.
 - UFW routes remote peers only to the Home Agent service range; unconfigured
   ports have no listener.
+- Forwarded home services check each device's source address and permissions.
+  API connections and forwarding workers are bounded; idle TCP forwards close
+  after five minutes without traffic.
+- Private Docker bindings have a persistent firewall guard independent of UFW.
+
+The local audit is available from **System**. For independent public, device,
+revocation, and reboot checks, see the commands in
+[VPS Install](docs/VPS_INSTALL.md#independent-network-checks).
 
 See [Trust Boundaries](docs/TRUST_BOUNDARIES.md) for the complete model and
 [VPS Install](docs/VPS_INSTALL.md) for advanced setup details.

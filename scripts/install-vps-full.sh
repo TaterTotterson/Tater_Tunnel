@@ -235,6 +235,7 @@ configure_firewall() {
 
   export DEBIAN_FRONTEND=noninteractive
   apt-get install -y ufw
+  sed -i 's/^IPV6=.*/IPV6=yes/' /etc/default/ufw
 
   ufw default deny incoming
   ufw default allow outgoing
@@ -274,6 +275,7 @@ Tater Tunnel full VPS stack installed.
 Pair the Home Agent with:
   VPS IP or Domain: https://$DOMAIN
   Pairing Code: $(cat /var/lib/tater-tunnel/pairing-code)
+  Expires after 15 minutes; reopen pairing for a fresh code.
 
 Public ports expected:
   80/tcp    Caddy HTTP and ACME

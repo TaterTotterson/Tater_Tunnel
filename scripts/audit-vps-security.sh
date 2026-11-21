@@ -5,6 +5,7 @@ SERVICE_NAME="tater-tunnel-vps"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 STATE_DIR="/var/lib/tater-tunnel"
 CONFIG_DIR="/etc/tater-tunnel"
+CONTROL_CONFIG_DIR="/etc/tater-tunnel-control"
 CADDYFILE="/etc/caddy/Caddyfile"
 ZNC_CADDY_SNIPPET="/etc/caddy/tater-sites/znc-web.caddy"
 WEBDAV_CADDY_SNIPPET="/etc/caddy/tater-sites/sftpgo-webdav.caddy"
@@ -117,6 +118,142 @@ check_disabled_optional_port() {
   fi
 }
 
+managed_container_apps() {
+  TATER_MANAGED_APP_CONFIG_ROOT="${CONTROL_CONFIG_DIR}/apps" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+definitions = {
+    "uptime-kuma": ("Uptime Kuma", 3001, "tater-uptime-kuma"),
+    "ntfy": ("ntfy", 2586, "tater-ntfy"),
+    "forgejo": ("Forgejo", 3000, "tater-forgejo"),
+    "matrix": ("Matrix Synapse", 8008, "tater-matrix"),
+}
+for app, (label, default_port, container) in definitions.items():
+    path = Path(os.environ["TATER_MANAGED_APP_CONFIG_ROOT"]) / app / "settings.json"
+    if not path.is_file():
+        continue
+    try:
+        settings = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        print(f"{app}|{label}|invalid||{default_port}|private|2222|{container}")
+        continue
+    print("|".join([
+        app, label, str(settings.get("access") or "private"),
+        str(settings.get("domain") or ""), str(settings.get("port") or default_port),
+        str(settings.get("sshAccess") or "private"),
+        str(settings.get("sshPort") or 2222), container,
+    ]))
+PY
+}
+
+check_managed_container_app() {
+  local added="$1"
+  local app="$2"
+  local label="$3"
+  local access="$4"
+  local domain="$5"
+  local port="$6"
+  local ssh_access="$7"
+  local ssh_port="$8"
+  local container="$9"
+  local snippet="/etc/caddy/tater-sites/tater-app-${app}.caddy"
+  local bindings
+  local running="false"
+
+  check_private_mode "${CONTROL_CONFIG_DIR}/apps/${app}" "700" "$label config directory"
+  check_private_mode "${CONTROL_CONFIG_DIR}/apps/${app}/settings.json" "600" "$label settings"
+  check_private_mode "${CONTROL_CONFIG_DIR}/apps/${app}/compose.json" "600" "$label Compose definition"
+  if ! command -v docker >/dev/null 2>&1; then
+    fail "$label is configured but Docker is unavailable"
+    return
+  fi
+  running="$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null || true)"
+
+  if [ "$running" != "true" ]; then
+    if [ -f "$snippet" ]; then
+      fail "$label is stopped but still has a public Caddy route"
+    else
+      pass "$label is stopped and has no public Caddy route"
+    fi
+    if has_broad_tcp_allow_rule "$added" "$port"; then
+      fail "$label is stopped but still has a broad public TCP $port allow rule"
+    else
+      pass "$label is stopped with no broad public TCP $port allow rule"
+    fi
+    return
+  fi
+
+  check_private_optional_port "$added" "$port" "$label direct service"
+  if systemctl is-enabled --quiet "tater-tunnel-app-${app}" \
+    && systemctl show -p After --value "tater-tunnel-app-${app}" | grep -Fq 'tater-tunnel-vps.service'; then
+    pass "$label starts after the VPS tunnel and is enabled at boot"
+  else
+    fail "$label is missing its tunnel-ordered boot service"
+  fi
+
+  if [ "$access" = "public" ]; then
+    if [ -n "$domain" ] && [ -f "$snippet" ] \
+      && grep -Fqx "$domain {" "$snippet" \
+      && grep -Fq "reverse_proxy 127.0.0.1:${port}" "$snippet"; then
+      pass "$label public HTTPS is routed only through Caddy at $domain"
+    else
+      fail "$label public HTTPS Caddy route is missing or invalid"
+    fi
+  elif [ -f "$snippet" ]; then
+    fail "$label has a public Caddy route while configured WireGuard-only"
+  else
+    pass "$label has no public Caddy route"
+  fi
+
+  bindings="$(docker port "$container" 2>/dev/null || true)"
+  if grep -Eq "(^|[[:space:]])(0\.0\.0\.0|\[::\]):${port}([[:space:]]|$)" <<< "$bindings"; then
+    fail "$label raw TCP $port is published on a public interface"
+  else
+    pass "$label raw TCP $port is not published publicly"
+  fi
+  published="$(docker inspect --format '{{json .HostConfig.PortBindings}}' "$container" 2>/dev/null || true)"
+  if python3 - "$published" "$port" "$app" "$ssh_access" "$ssh_port" <<'PY'
+import json, sys
+bindings = json.loads(sys.argv[1])
+port, app, ssh_access, ssh_port = sys.argv[2:]
+for entries in (bindings or {}).values():
+    for item in entries or []:
+        host, published_port = item.get("HostIp"), item.get("HostPort")
+        if published_port == port and host in {"127.0.0.1", "10.88.0.1"}:
+            continue
+        if app == "forgejo" and published_port == ssh_port:
+            allowed = {"10.88.0.1"} | ({"0.0.0.0"} if ssh_access == "public" else set())
+            if host in allowed:
+                continue
+        raise SystemExit(1)
+PY
+  then
+    pass "$label Docker publishes only the approved addresses and ports"
+  else
+    fail "$label Docker has an unexpected published address or port"
+  fi
+
+  if [ "$app" = "forgejo" ]; then
+    if [ "$ssh_access" = "public" ]; then
+      check_public_optional_port "$added" "$ssh_port" "Forgejo SSH"
+      if grep -Eq "(0\.0\.0\.0|\[::\]):${ssh_port}([[:space:]]|$)" <<< "$bindings"; then
+        pass "Forgejo public SSH is published on TCP $ssh_port as requested"
+      else
+        fail "Forgejo public SSH is not published on TCP $ssh_port"
+      fi
+    else
+      check_private_optional_port "$added" "$ssh_port" "Forgejo SSH"
+      if grep -Eq "(0\.0\.0\.0|\[::\]):${ssh_port}([[:space:]]|$)" <<< "$bindings"; then
+        fail "Forgejo private SSH is published on a public interface"
+      else
+        pass "Forgejo private SSH is not published publicly"
+      fi
+    fi
+  fi
+}
+
 check_sftpgo_access() {
   local added="$1"
   local access="$2"
@@ -219,6 +356,25 @@ check_private_mode() {
   fi
 }
 
+check_root_owned_path() {
+  local path="$1"
+  local label="$2"
+  if python3 - "$path" <<'PY'
+import os, stat, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+for item in (path, *path.parents):
+    metadata = item.lstat()
+    if stat.S_ISLNK(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
+        raise SystemExit(1)
+PY
+  then
+    pass "$label and its parent directories are root-owned and not writable by other users"
+  else
+    fail "$label is missing, symlinked, or writable by an unprivileged user"
+  fi
+}
+
 echo "Tater Tunnel VPS security audit"
 echo
 
@@ -258,6 +414,35 @@ check_private_mode "$CONFIG_DIR/wireguard" "700" "WireGuard config directory"
 check_private_mode "$STATE_DIR/pairing-code" "600" "Pairing code"
 check_private_mode "$STATE_DIR/vps-agent.json" "600" "VPS state"
 check_private_mode "$CONFIG_DIR/wireguard/tater0.conf" "600" "WireGuard server config"
+check_root_owned_path /etc/tater-tunnel-control "Privileged app configuration"
+check_root_owned_path /var/lib/tater-tunnel-control "Privileged updater state"
+check_root_owned_path /opt/tater-tunnel/scripts/release-allowed-signers "Trusted VPS release signing keys"
+check_root_owned_path /opt/tater-tunnel/scripts/verify_release.py "VPS release verifier"
+if systemctl is-enabled --quiet tater-tunnel-control && systemctl is-active --quiet tater-tunnel-control; then
+  pass "The protected control helper is active and enabled at boot"
+else
+  fail "The protected control helper is not active and enabled at boot"
+fi
+if [ "$(systemctl show -p ProtectSystem --value "$SERVICE_NAME" 2>/dev/null)" = "strict" ] \
+  && [ "$(systemctl show -p NoNewPrivileges --value "$SERVICE_NAME" 2>/dev/null)" = "yes" ]; then
+  pass "The running VPS Agent has its required systemd isolation"
+else
+  fail "The running VPS Agent isolation differs from the required configuration"
+fi
+if grep -Eq '^IPV6=yes$' /etc/default/ufw 2>/dev/null; then
+  pass "UFW also manages IPv6 traffic"
+else
+  fail "UFW IPv6 protection is disabled or unavailable"
+fi
+if command -v docker >/dev/null 2>&1 && compgen -G '/etc/tater-tunnel-control/apps/*/settings.json' >/dev/null; then
+  if nft list chain inet tater_apps_guard private_containers 2>/dev/null \
+    | grep -Eq 'iifname != "tater0" ct original ip daddr 10\.88\.0\.1.*drop' \
+    && systemctl is-enabled --quiet tater-tunnel-container-guard; then
+    pass "Private Docker bindings are protected before Docker forwarding rules and at boot"
+  else
+    fail "The persistent private container firewall is missing"
+  fi
+fi
 
 state_file="$STATE_DIR/vps-agent.json"
 if [ -f "$state_file" ] && command -v python3 >/dev/null 2>&1; then
@@ -382,6 +567,12 @@ fi
 
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
   added="$(ufw show added 2>/dev/null || true)"
+  defaults="$(ufw status verbose 2>/dev/null || true)"
+  if grep -Eq 'Default: deny \(incoming\).*deny \(routed\)' <<< "$defaults"; then
+    pass "The active firewall denies unapproved incoming and routed traffic by default"
+  else
+    fail "The active firewall does not deny unapproved incoming and routed traffic by default"
+  fi
   if grep -Fq "allow in on tater0 from 10.88.0.2 to 10.88.0.1 port ${LISTEN_PORT} proto tcp" <<< "$added"; then
     pass "UFW limits management to the Home Agent WireGuard address"
   else
@@ -417,6 +608,14 @@ if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; the
   if [ "$found_znc" = "0" ] && compgen -G '/etc/systemd/system/znc-*.service' >/dev/null; then
     check_private_optional_port "$added" 6697 ZNC
   fi
+  while IFS='|' read -r app label access app_domain app_port ssh_access ssh_port container; do
+    [ -n "$app" ] || continue
+    if [ "$access" = "invalid" ]; then
+      fail "$label settings are not valid JSON"
+      continue
+    fi
+    check_managed_container_app "$added" "$app" "$label" "$access" "$app_domain" "$app_port" "$ssh_access" "$ssh_port" "$container"
+  done < <(managed_container_apps)
 else
   fail "UFW is not active"
 fi
@@ -431,5 +630,6 @@ if [ -n "$DOMAIN" ]; then
 fi
 
 echo
+echo "This local audit does not prove internet exposure or device isolation. Run audit-network-boundary.py from an independent client."
 printf 'Failures: %s  Warnings: %s\n' "$FAILURES" "$WARNINGS"
 [ "$FAILURES" -eq 0 ]

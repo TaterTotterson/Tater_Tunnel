@@ -665,7 +665,7 @@ private final class TrafficMonitor {
     private var requestInFlight = false
 
     init(webURL: URL) {
-        stateURL = URL(string: "\(webURL.absoluteString)/api/state")!
+        stateURL = URL(string: "\(webURL.absoluteString)/api/status")!
     }
 
     func start() {
