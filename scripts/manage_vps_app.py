@@ -631,8 +631,18 @@ def apply_caddy(app: str, settings: dict[str, Any], enabled: bool = True) -> Non
 
 
 def delete_ufw_rule(arguments: list[str]) -> None:
-    while run(["ufw", "--force", "delete", *arguments], check=False, timeout=20).returncode == 0:
-        pass
+    # UFW also returns zero when a rule is absent; only an actual deletion is progress.
+    for _ in range(32):
+        result = run(["ufw", "--force", "delete", *arguments], check=False, timeout=20)
+        output = "\n".join(part for part in (result.stdout, result.stderr) if part)
+        messages = [line.strip() for line in output.splitlines() if line.strip()]
+        if result.returncode != 0:
+            if messages and all(line.startswith("Could not delete non-existent rule") for line in messages):
+                return
+            raise ManagedAppError(f"Could not remove managed firewall rule: {output.strip()[-2000:]}")
+        if not any(line in {"Rule deleted", "Rule deleted (v6)"} for line in messages):
+            return
+    raise ManagedAppError("Too many duplicate managed firewall rules; review UFW before retrying")
 
 
 def apply_firewall(app: str, settings: dict[str, Any], enabled: bool = True) -> None:

@@ -1,52 +1,28 @@
-# Tater Tunnel v0.5.0
+# Tater Tunnel v0.5.1
 
-This release hardens the tunnel and expands the Control Center with four
-allow-listed VPS apps.
+Fixes managed VPS app installations getting stuck during firewall setup.
 
-## Tunnel Security
+## Fixed
 
-- Serve only approved UI assets; private state, source, dotfiles, and symlinks
-  cannot be downloaded through the Home Agent web server.
-- Require loopback access, a browser session, matching Origin, and CSRF tokens
-  for dashboard changes. macOS traffic counters and Docker health checks use
-  separate minimal status endpoints.
-- Expire unused pairing codes after 15 minutes without extending their deadline
-  on restart. Validate pairing responses before creating tunnel configuration.
-- Choose home services per device. Permission changes and revocation close
-  existing forwarded connections. Existing devices retain their prior access.
-- Bound API connections and forwarding workers across home services and close
-  idle TCP forwards after five minutes.
-- Verify signed VPS release archives against an installed Ed25519 key and
-  reject unsigned, modified, and older releases before running their code.
-- Keep privileged settings outside the unprivileged agent's writable state;
-  add a persistent container forwarding guard and IPv6 firewall checks.
-- Add credential-redacted security history and an independent network checker
-  for public access, ordinary peers, revocation, and reboot comparisons.
-
-## Managed Apps
-
-- Install and manage Uptime Kuma, ntfy, Forgejo, and Matrix Synapse from the
-  Home Agent.
-- Choose WireGuard-only access or a dedicated public Caddy HTTPS hostname per
-  app. Raw container web ports remain private in both modes.
-- Use guarded defaults for administrators, registration, attachments, storage,
-  PostgreSQL, Git SSH, and Matrix federation.
-- Run version-pinned generated Compose definitions without accepting arbitrary
-  images, Compose files, or commands from the browser.
-- Audit managed app file modes, firewall rules, Caddy routes, and Docker port
-  bindings from the System view.
-- Start managed apps after WireGuard and the container firewall at boot;
-  preserve generated database credentials when an installation is interrupted.
+- Stop firewall cleanup when UFW reports that a rule no longer exists, even
+  when UFW returns a successful exit status. Previously, installation could
+  loop indefinitely after creating the container.
+- Limit duplicate-rule cleanup and report genuine firewall failures, including
+  IPv6 failures, instead of silently ignoring them.
+- Applies to Uptime Kuma, ntfy, Forgejo, and Matrix installation and management.
+  Existing private-access restrictions remain in place.
 
 ## Updating
 
-- Update the VPS Agent first, then the Home Agent. Existing pairing, devices,
-  and home service routes are preserved.
-- Open the dashboard on the Home Agent computer at `http://127.0.0.1:4173`.
-  Direct LAN dashboard access is now blocked. For a headless Home Agent, use
-  `ssh -L 4173:127.0.0.1:4173 YOUR_USER@HOME_AGENT_HOST`.
-- Existing devices retain their previous home service access. Use **Access**
-  beside a device to select individual services. These permissions do not
-  replace authentication for VPS-hosted apps.
-- The macOS app, Linux Docker image, and signed VPS update archive are built
-  from the same `v0.5.0` tag.
+- Update the VPS Agent, then retry the affected app's installation or saved
+  configuration. Existing pairing, devices, app data, and settings are kept.
+- If an installation is already stuck and blocks Control Center updates, run
+  the VPS setup script over SSH and choose **Update Tater Tunnel** first.
+- The fix is VPS-side; an existing v0.5.0 Home Agent can continue to be used.
+  Matching macOS and Docker packages are also built for v0.5.1.
+
+## Verification
+
+- All 85 local regression tests pass.
+- Verified absent-rule cleanup, existing-rule removal, and repeated cleanup
+  against real UFW in an isolated Ubuntu 26.04 container.
