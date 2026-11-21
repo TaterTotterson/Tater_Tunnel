@@ -23,6 +23,7 @@ from typing import Any
 CONFIG_ROOT = Path("/etc/tater-tunnel-control/apps")
 STATE_ROOT = Path("/var/lib/tater-tunnel-control/apps")
 CADDY_DIR = Path("/etc/caddy/tater-sites")
+SYSTEMD_ROOT = Path("/etc/systemd/system")
 WIREGUARD_ADDRESS = "10.88.0.1"
 WIREGUARD_NETWORK = "10.88.0.0/24"
 
@@ -739,7 +740,7 @@ def enable_app_service(app: str, compose_path: Path) -> None:
         raise ManagedAppError("Docker Compose executable is unavailable")
     command = " ".join([executable, *prefix[1:], "-p", f"tater-{app}", "-f", str(compose_path)])
     atomic_write(
-        Path(f"/etc/systemd/system/tater-tunnel-app-{app}.service"),
+        SYSTEMD_ROOT / f"tater-tunnel-app-{app}.service",
         f"[Unit]\nDescription=Tater managed {APP_DEFINITIONS[app]['name']}\n"
         "Requires=docker.service tater-tunnel-vps.service tater-tunnel-container-guard.service\n"
         "After=docker.service tater-tunnel-vps.service tater-tunnel-container-guard.service\n"
@@ -766,6 +767,7 @@ def configure(app: str, settings_file: Path) -> None:
     os.chmod(state_dir, 0o700)
     existing = read_json(saved_path)
     compose_config, saved = BUILDERS[app](request, existing, config_dir, state_dir)
+    saved["installed"] = True
     saved["enabled"] = True
     atomic_write(compose_path, json.dumps(compose_config, indent=2) + "\n")
     # Preserve generated database credentials even when startup needs a retry.
@@ -780,12 +782,35 @@ def configure(app: str, settings_file: Path) -> None:
     print(f"{APP_DEFINITIONS[app]['name']} is installed and running.")
 
 
-def action(app: str, requested_action: str) -> None:
+def validate_app_directory(path: Path, parent: Path) -> None:
+    if path.parent != parent or path.is_symlink() or parent.is_symlink():
+        raise ManagedAppError("Refusing to delete an unsafe app data path")
+    for directory, children, _files in os.walk(path, followlinks=False):
+        if Path(directory).is_mount():
+            raise ManagedAppError("Unmount app storage before deleting its data")
+        children[:] = [name for name in children if not (Path(directory) / name).is_symlink()]
+
+
+def remove_app_directory(path: Path, parent: Path) -> None:
+    validate_app_directory(path, parent)
+    if not path.exists():
+        return
+    shutil.rmtree(path)
+
+
+def action(app: str, requested_action: str, *, delete_data: bool = False) -> None:
     ensure_root()
     _config_dir, _state_dir, saved_path, compose_path = app_paths(app)
     settings = read_json(saved_path)
     if not settings or not compose_path.exists():
         raise ManagedAppError(f"{APP_DEFINITIONS[app]['name']} is not installed")
+    if delete_data and requested_action != "uninstall":
+        raise ManagedAppError("Data deletion is only supported when uninstalling")
+    if requested_action in {"start", "restart"} and settings.get("installed", True) is not True:
+        raise ManagedAppError("Reinstall the app before enabling it")
+    if delete_data:
+        for path, parent in ((STATE_ROOT / app, STATE_ROOT), (CONFIG_ROOT / app, CONFIG_ROOT)):
+            validate_app_directory(path, parent)
     if requested_action == "start":
         enable_app_service(app, compose_path)
         compose(app, compose_path, "up", "-d")
@@ -793,14 +818,26 @@ def action(app: str, requested_action: str) -> None:
         apply_caddy(app, settings)
     elif requested_action == "restart":
         compose(app, compose_path, "restart")
-    elif requested_action == "disable":
+    elif requested_action in {"disable", "uninstall"}:
         run(["systemctl", "disable", "--now", f"tater-tunnel-app-{app}"], check=False, timeout=120)
-        compose(app, compose_path, "stop")
+        if requested_action == "uninstall":
+            compose(app, compose_path, "down", "--remove-orphans")
+        else:
+            compose(app, compose_path, "stop")
         apply_caddy(app, settings, enabled=False)
         apply_firewall(app, settings, enabled=False)
     else:
         raise ManagedAppError("Service action is not allowed")
-    if requested_action in {"start", "disable"}:
+    if requested_action == "uninstall":
+        (SYSTEMD_ROOT / f"tater-tunnel-app-{app}.service").unlink(missing_ok=True)
+        run(["systemctl", "daemon-reload"], timeout=30)
+        if delete_data:
+            remove_app_directory(STATE_ROOT / app, STATE_ROOT)
+            remove_app_directory(CONFIG_ROOT / app, CONFIG_ROOT)
+        else:
+            settings.update({"installed": False, "enabled": False})
+            atomic_write(saved_path, json.dumps(settings, indent=2) + "\n")
+    elif requested_action in {"start", "disable"}:
         settings["enabled"] = requested_action == "start"
         atomic_write(saved_path, json.dumps(settings, indent=2) + "\n")
     print(f"{APP_DEFINITIONS[app]['name']} action complete: {requested_action}")
@@ -811,7 +848,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("command", choices=("configure", "action"))
     parser.add_argument("--app", required=True, choices=tuple(APP_DEFINITIONS))
     parser.add_argument("--settings-file", type=Path)
-    parser.add_argument("--action", choices=("start", "restart", "disable"))
+    parser.add_argument("--action", choices=("start", "restart", "disable", "uninstall"))
+    parser.add_argument("--delete-data", action="store_true")
     return parser.parse_args()
 
 
@@ -826,7 +864,7 @@ def main() -> int:
         else:
             if not args.action:
                 raise ManagedAppError("--action is required")
-            action(app, args.action)
+            action(app, args.action, delete_data=args.delete_data)
     except ManagedAppError as error:
         print(str(error), file=sys.stderr)
         return 1

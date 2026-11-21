@@ -203,6 +203,13 @@ Synapse. SFTPGo protocol exposure, storage cap, WebDAV hostname, and optional
 one-time Cloudflare DNS setup are available there. ZNC owner, listeners, and
 initial administrator setup are available there as well.
 
+Installed apps have **Enable**, **Disable**, and **Uninstall** controls.
+Disabling keeps the app installed with its data and settings. Uninstalling
+defaults to keeping data for a later **Reinstall**. Permanent deletion is a
+separate choice that requires typing the app name and confirming. Only managed
+local app data is deleted; external storage, shared Docker images, and system
+dependencies are kept. Removing ZNC does not remove its Linux user.
+
 Uptime Kuma, ntfy, Forgejo, and Matrix run in version-pinned Docker containers.
 Docker is installed on demand. Their web ports always bind only to loopback and
 `10.88.0.1`. Each app starts WireGuard-only; selecting public access creates a

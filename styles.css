@@ -279,6 +279,14 @@ main { width: min(1440px, 100%); margin: 0 auto; padding: 30px 32px 60px; }
 .dialog-actions { position: sticky; bottom: 0; z-index: 2; display: flex; justify-content: space-between; gap: 10px; margin: 16px -24px 0; padding: 14px 24px; border-top: 1px solid var(--line); background: rgba(30,30,27,.96); backdrop-filter: blur(12px); }
 .dialog-actions > div { display: flex; gap: 9px; }
 .dialog-actions .button { flex: 0 0 auto; }
+.dialog-actions, .dialog-actions > div { flex-wrap: wrap; }
+.app-row-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.uninstall-options { margin-top: 16px; padding: 16px; border: 1px solid rgba(225,93,82,.45); border-radius: 5px; }
+.uninstall-options h3 { margin: 0 0 8px; font-size: .95rem; }
+.uninstall-options p { color: var(--muted); font-size: .74rem; line-height: 1.5; }
+.uninstall-options .field { margin-top: 12px; }
+.uninstall-options .delete-warning { color: #ffb7b0; }
+.uninstall-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 .toast { position: fixed; right: 24px; bottom: 24px; z-index: 50; max-width: min(380px, calc(100% - 48px)); padding: 12px 15px; border: 1px solid rgba(120,197,87,.3); border-radius: 6px; color: #d9f8cc; background: #172217; box-shadow: 0 18px 44px rgba(0,0,0,.4); font-size: .78rem; font-weight: 750; opacity: 0; transform: translateY(10px); pointer-events: none; transition: .2s ease; }
 .toast.is-visible { opacity: 1; transform: translateY(0); }
 
@@ -390,7 +398,7 @@ main { width: min(1440px, 100%); margin: 0 auto; padding: 30px 32px 60px; }
   .mascot-callout img { width: 126px; height: 168px; margin-left: -30px; }
   .filter-bar { align-items: flex-start; flex-direction: column; }
   .app-row { grid-template-columns: 40px minmax(0,1fr); gap: 12px; }
-  .app-row > .button { grid-column: 2; justify-self: start; }
+  .app-row > .button, .app-row-actions { grid-column: 2; justify-self: start; }
   .update-lanes { grid-template-columns: 1fr; }
   .update-lane { grid-template-columns: 46px minmax(0,1fr) auto; }
   .update-lane > .button { grid-column: 2 / -1; }

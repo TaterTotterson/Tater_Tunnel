@@ -278,6 +278,22 @@ App services start after Docker, the container firewall, and the VPS WireGuard
 interface. Generated database credentials are saved before startup, allowing an
 interrupted installation to be retried without changing its database password.
 
+Disabled apps remain installed and can be enabled directly without pulling an
+image or repeating administrator setup. Uninstall removes the managed runtime,
+boot unit, and access routes. By default, settings and data remain available
+for reinstall. Deleting them requires a separate confirmation and the app name.
+Container cleanup is limited to that app's managed configuration and state
+directories. Docker images, shared dependencies, and external storage are not
+deleted.
+
+SFTPGo and ZNC support the same lifecycle controls. Package removal keeps their
+configuration by default. A confirmed SFTPGo data deletion removes its managed
+configuration, account database, local data, and storage image; only its exact
+managed filesystem entry is removed from `/etc/fstab`. Unmanaged mounted
+storage must be handled manually. ZNC deletion is limited to the selected normal
+user's `.znc` directory and does not remove the Linux account. Multiple ZNC
+services require manual package removal over SSH.
+
 Every app defaults to WireGuard-only access. Selecting public access requires a
 dedicated DNS hostname and confirmation, then publishes that hostname through
 Caddy on `443/tcp`. The raw app port remains bound only to loopback and

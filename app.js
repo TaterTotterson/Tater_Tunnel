@@ -44,6 +44,7 @@ let controlTimer = null;
 let toastTimer = null;
 let csrfToken = "";
 let editingDeviceId = "";
+let appJobRunning = false;
 
 const $ = (id) => document.getElementById(id);
 const elements = Object.fromEntries([
@@ -61,7 +62,9 @@ const elements = Object.fromEntries([
   "vpsUpdateBadge", "checkUpdatesButton", "updateVpsButton", "vpsUpdateMessage", "systemFacts",
   "processList", "auditButton", "auditBadge",
   "auditOutput", "appDialog", "appManagerForm", "closeAppDialog", "cancelAppChanges",
-  "disableAppButton", "saveAppChanges", "dialogAppMark", "dialogTitle", "sftpgoRuntimeBadge",
+  "disableAppButton", "enableAppButton", "uninstallAppButton", "saveAppChanges", "dialogAppMark", "dialogTitle", "sftpgoRuntimeBadge",
+  "uninstallOptions", "uninstallTitle", "uninstallDataPolicy", "uninstallDeleteWarning",
+  "uninstallConfirmation", "uninstallConfirmationLabel", "cancelUninstall", "confirmUninstallButton",
   "sftpgoEndpoints", "sftpgoStorage", "sftpAccess", "ftpAccess", "webdavAccess",
   "webdavDomainField", "webdavDomain", "cloudflareEnabled", "cloudflareZone",
   "cloudflareToken", "cloudflareIpv4", "zncRuntimeBadge", "zncEndpoints", "zncUser",
@@ -118,6 +121,18 @@ function bindEvents() {
   elements.closeAppDialog.addEventListener("click", closeAppDialog);
   elements.cancelAppChanges.addEventListener("click", closeAppDialog);
   elements.disableAppButton.addEventListener("click", disableCurrentApp);
+  elements.enableAppButton.addEventListener("click", enableCurrentApp);
+  elements.uninstallAppButton.addEventListener("click", () => {
+    elements.uninstallOptions.hidden = false;
+    elements.uninstallTitle.textContent = `Uninstall ${getApp(currentApp).name}`;
+    syncUninstallChoice();
+    elements.uninstallOptions.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  });
+  elements.cancelUninstall.addEventListener("click", () => { elements.uninstallOptions.hidden = true; });
+  elements.uninstallDataPolicy.addEventListener("change", syncUninstallChoice);
+  elements.uninstallConfirmation.addEventListener("input", syncUninstallChoice);
+  elements.confirmUninstallButton.addEventListener("click", uninstallCurrentApp);
+  elements.appDialog.addEventListener("cancel", (event) => { if (appJobRunning) event.preventDefault(); });
   elements.appManagerForm.addEventListener("submit", saveAppChanges);
   elements.webdavAccess.addEventListener("change", syncConditionalFields);
   elements.cloudflareEnabled.addEventListener("change", syncConditionalFields);
@@ -306,13 +321,24 @@ function renderApps() {
     const detail = app.id === "znc"
       ? `<span>Networks</span><strong>${app.settings?.networkCount || 0}</strong>`
       : `<span>Storage</span><strong>${formatBytes(app.storage?.usedBytes)}</strong>`;
-    row.innerHTML = `<div class="app-mark ${meta.className}">${escapeHtml(meta.mark)}</div><div class="app-description"><div><h2>${escapeHtml(app.name)}</h2><span class="state-badge ${app.service?.active ? "is-good" : ""}">${app.service?.active ? "Running" : app.installed ? "Stopped" : "Available"}</span></div><p>${escapeHtml(meta.description)}</p><div class="endpoint-preview"><span>LINK</span>${endpoints || "<code>Configure to create managed links</code>"}</div></div><div class="app-facts"><span>Version</span><strong>${escapeHtml(app.version || "Not installed")}</strong>${detail}</div>`;
+    row.innerHTML = `<div class="app-mark ${meta.className}">${escapeHtml(meta.mark)}</div><div class="app-description"><div><h2>${escapeHtml(app.name)}</h2><span class="state-badge ${app.service?.active ? "is-good" : ""}">${appStatus(app)}</span></div><p>${escapeHtml(meta.description)}</p><div class="endpoint-preview"><span>LINK</span>${endpoints || "<code>Configure to create managed links</code>"}</div></div><div class="app-facts"><span>Version</span><strong>${escapeHtml(app.version || "Not installed")}</strong>${detail}</div>`;
+    const actions = document.createElement("div");
+    actions.className = "app-row-actions";
+    if (app.installed && !app.service?.active) {
+      const enable = document.createElement("button");
+      enable.type = "button";
+      enable.className = "button button-primary";
+      enable.textContent = "Enable";
+      enable.addEventListener("click", () => { if (openAppDialog(app.id)) enableCurrentApp(); });
+      actions.append(enable);
+    }
     const button = document.createElement("button");
     button.type = "button";
     button.className = `button ${app.installed ? "button-secondary" : "button-primary"}`;
-    button.textContent = app.installed ? "Manage" : "Install";
+    button.textContent = app.installed ? "Manage" : app.retainedData ? "Reinstall" : "Install";
     button.addEventListener("click", () => openAppDialog(app.id));
-    row.append(button);
+    actions.append(button);
+    row.append(actions);
     elements.appCatalog.append(row);
   });
   renderOverviewApps(apps);
@@ -325,11 +351,11 @@ function renderOverviewApps(apps) {
     const meta = APP_META[app.id] || { mark: app.name.charAt(0), className: "", subtitle: "Managed app" };
     const row = document.createElement("article");
     row.className = "service-row";
-    row.innerHTML = `<div class="app-mark ${meta.className}">${escapeHtml(meta.mark)}</div><div class="service-main"><strong>${escapeHtml(app.name)}</strong><span>${escapeHtml(meta.subtitle)}</span></div><span class="state-badge ${app.service?.active ? "is-good" : ""}">${app.service?.active ? "Running" : app.installed ? "Stopped" : "Available"}</span><div class="service-meta"><strong>${escapeHtml(app.version || "-")}</strong><span>version</span></div>`;
+    row.innerHTML = `<div class="app-mark ${meta.className}">${escapeHtml(meta.mark)}</div><div class="service-main"><strong>${escapeHtml(app.name)}</strong><span>${escapeHtml(meta.subtitle)}</span></div><span class="state-badge ${app.service?.active ? "is-good" : ""}">${appStatus(app)}</span><div class="service-meta"><strong>${escapeHtml(app.version || "-")}</strong><span>version</span></div>`;
     const button = document.createElement("button");
     button.className = "row-button";
     button.type = "button";
-    button.textContent = app.installed ? "Manage" : "Install";
+    button.textContent = app.installed ? "Manage" : app.retainedData ? "Reinstall" : "Install";
     button.addEventListener("click", () => openAppDialog(app.id));
     row.append(button);
     elements.overviewApps.append(row);
@@ -490,6 +516,7 @@ async function waitForVpsUpdate() {
 }
 
 function openAppDialog(appId) {
+  if (appJobRunning) return false;
   const app = getApp(appId);
   if (!app) return showToast(controlError || "App controls are not available.", true);
   currentApp = appId;
@@ -502,17 +529,33 @@ function openAppDialog(appId) {
     section.querySelectorAll("input, select, textarea").forEach((field) => { field.disabled = section.hidden; });
   });
   elements.disableAppButton.hidden = !app.installed || !app.service?.active;
+  elements.enableAppButton.hidden = !app.installed || Boolean(app.service?.active);
+  elements.uninstallAppButton.hidden = !app.installed;
+  elements.uninstallAppButton.disabled = control?.capabilities?.appLifecycle !== true;
+  elements.uninstallAppButton.title = elements.uninstallAppButton.disabled ? "Update the VPS Agent to enable uninstall" : "Uninstall this app";
+  elements.uninstallOptions.hidden = true;
+  elements.uninstallDataPolicy.value = "keep";
+  elements.uninstallConfirmation.value = "";
+  syncUninstallChoice();
   elements.jobPanel.hidden = true;
   elements.saveAppChanges.disabled = false;
+  elements.saveAppChanges.textContent = app.installed ? "Apply changes" : app.retainedData ? "Reinstall app" : "Install app";
   if (appId === "sftpgo") fillSftpgoForm(app);
   else if (appId === "znc") fillZncForm(app);
   else fillContainerAppForm(app);
   elements.appDialog.showModal();
+  return true;
+}
+
+function appStatus(app) {
+  if (app.service?.active) return "Running";
+  if (app.installed) return app.service?.enabled === false ? "Disabled" : "Stopped";
+  return app.retainedData ? "Data kept" : "Available";
 }
 
 function fillSftpgoForm(app) {
   const settings = app.settings || {};
-  elements.sftpgoRuntimeBadge.textContent = app.service?.active ? "Running" : app.installed ? "Stopped" : "Ready to install";
+  elements.sftpgoRuntimeBadge.textContent = appStatus(app);
   elements.sftpgoRuntimeBadge.className = `state-badge ${app.service?.active ? "is-good" : ""}`;
   elements.sftpgoStorage.value = settings.maxStorageGb || 20;
   elements.sftpAccess.value = settings.sftpAccess || "private";
@@ -529,7 +572,7 @@ function fillSftpgoForm(app) {
 
 function fillZncForm(app) {
   const settings = app.settings || {};
-  elements.zncRuntimeBadge.textContent = app.service?.active ? "Running" : app.installed ? "Stopped" : "Ready to install";
+  elements.zncRuntimeBadge.textContent = appStatus(app);
   elements.zncRuntimeBadge.className = `state-badge ${app.service?.active ? "is-good" : ""}`;
   elements.zncUser.value = settings.user || control?.system?.suggestedUser || "";
   elements.zncDataDir.value = settings.dataDir || (elements.zncUser.value ? `/home/${elements.zncUser.value}/.znc` : "");
@@ -542,7 +585,7 @@ function fillZncForm(app) {
 }
 
 function setRuntimeBadge(badge, app) {
-  badge.textContent = app.service?.active ? "Running" : app.installed ? "Stopped" : "Ready to install";
+  badge.textContent = appStatus(app);
   badge.className = `state-badge ${app.service?.active ? "is-good" : ""}`;
 }
 
@@ -577,7 +620,7 @@ function fillContainerAppForm(app) {
     setRuntimeBadge(elements.matrixRuntimeBadge, app);
     elements.matrixAccess.value = settings.access || "private";
     elements.matrixServerName.value = settings.serverName || "";
-    elements.matrixServerName.readOnly = Boolean(app.installed);
+    elements.matrixServerName.readOnly = Boolean(app.installed || app.retainedData);
     elements.matrixDomain.value = settings.domain || settings.serverName || "";
     elements.matrixAdminUser.value = settings.adminUser || "tater";
     elements.matrixAdminPassword.value = "";
@@ -718,11 +761,48 @@ async function saveAppChanges(event) {
 async function disableCurrentApp() {
   const app = getApp(currentApp);
   if (!app || !window.confirm(`Stop ${app.name} and disable it at startup? Its configuration and data will be kept.`)) return;
+  await performAppAction("disable", {}, `Disabling ${app.name}`, `${app.name} is disabled. Its data was kept.`);
+}
+
+async function enableCurrentApp() {
+  const app = getApp(currentApp);
+  if (!app?.installed || appJobRunning) return;
+  await performAppAction("start", {}, `Enabling ${app.name}`, `${app.name} is enabled.`);
+}
+
+function syncUninstallChoice() {
+  const app = getApp(currentApp);
+  const deleting = elements.uninstallDataPolicy.value === "delete";
+  elements.uninstallDeleteWarning.hidden = !deleting;
+  elements.uninstallConfirmation.disabled = !deleting || appJobRunning;
+  elements.uninstallConfirmationLabel.textContent = `Type ${app?.name || "the app name"} to confirm deletion`;
+  elements.confirmUninstallButton.textContent = deleting ? "Uninstall and delete data" : "Uninstall and keep data";
+  elements.confirmUninstallButton.disabled = appJobRunning || !app || (deleting && elements.uninstallConfirmation.value !== app.name);
+}
+
+async function uninstallCurrentApp() {
+  const app = getApp(currentApp);
+  if (!app?.installed || appJobRunning) return;
+  const deleteData = elements.uninstallDataPolicy.value === "delete";
+  if (deleteData && elements.uninstallConfirmation.value !== app.name) return;
+  const message = deleteData
+    ? `Permanently delete ${app.name} and all of its managed local data and settings? This cannot be undone.`
+    : `Uninstall ${app.name}? Its data and settings will be kept for reinstall.`;
+  if (!window.confirm(message)) return;
+  await performAppAction("uninstall", {
+    confirmUninstall: true, deleteData, confirmDeleteData: deleteData,
+    confirmation: deleteData ? elements.uninstallConfirmation.value : ""
+  }, `Uninstalling ${app.name}`, deleteData ? `${app.name} and its managed data were removed.` : `${app.name} was uninstalled. Its data was kept.`);
+}
+
+async function performAppAction(action, extra, title, successMessage) {
+  const appId = currentApp;
   try {
-    await runJob("service-action", { app: currentApp, action: "disable" }, `Disabling ${app.name}`);
+    const result = await runJob("service-action", { app: appId, action, ...extra }, title);
+    if (result.snapshot && control?.apps) control.apps[appId] = result.snapshot;
     await refreshControl(true);
     closeAppDialog();
-    showToast(`${app.name} is disabled. Its data was kept.`);
+    showToast(successMessage);
   } catch (error) {
     showToast(error.message, true);
   }
@@ -752,16 +832,19 @@ async function runSecurityAudit() {
 
 async function runJob(operation, payload, title, showPanel = true) {
   if (showPanel) {
+    if (appJobRunning) throw new Error("An app operation is already running.");
+    appJobRunning = true;
     elements.jobPanel.hidden = false;
     elements.jobTitle.textContent = title;
     elements.jobMessage.textContent = "The VPS is working. This may take a few minutes.";
-    elements.saveAppChanges.disabled = true;
-    elements.disableAppButton.disabled = true;
+    [elements.saveAppChanges, elements.disableAppButton, elements.enableAppButton,
+      elements.uninstallAppButton, elements.confirmUninstallButton, elements.cancelUninstall,
+      elements.cancelAppChanges, elements.closeAppDialog, elements.uninstallDataPolicy].forEach((button) => { button.disabled = true; });
   }
-  const started = await requestApi("/api/control/jobs", { method: "POST", body: { operation, payload } });
-  const jobId = started.job?.id;
-  if (!jobId) throw new Error("The VPS did not return a control job.");
   try {
+    const started = await requestApi("/api/control/jobs", { method: "POST", body: { operation, payload } });
+    const jobId = started.job?.id;
+    if (!jobId) throw new Error("The VPS did not return a control job.");
     while (true) {
       await wait(JOB_POLL_MS);
       const response = await requestApi(`/api/control/jobs/${encodeURIComponent(jobId)}`);
@@ -772,8 +855,13 @@ async function runJob(operation, payload, title, showPanel = true) {
     }
   } finally {
     if (showPanel) {
-      elements.saveAppChanges.disabled = false;
-      elements.disableAppButton.disabled = false;
+      appJobRunning = false;
+      elements.jobPanel.hidden = true;
+      [elements.saveAppChanges, elements.disableAppButton, elements.enableAppButton,
+        elements.cancelUninstall, elements.cancelAppChanges, elements.closeAppDialog,
+        elements.uninstallDataPolicy].forEach((button) => { button.disabled = false; });
+      elements.uninstallAppButton.disabled = control?.capabilities?.appLifecycle !== true;
+      syncUninstallChoice();
     }
   }
 }

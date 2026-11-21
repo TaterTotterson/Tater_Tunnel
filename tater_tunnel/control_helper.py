@@ -36,6 +36,11 @@ ZNC_UNIT_DIR = Path("/etc/systemd/system")
 UPDATE_STATUS_PATH = Path("/var/lib/tater-tunnel-control/update-status.json")
 MANAGED_APP_CONFIG_ROOT = Path("/etc/tater-tunnel-control/apps")
 MANAGED_APP_STATE_ROOT = Path("/var/lib/tater-tunnel-control/apps")
+RETAINED_APP_ROOT = Path("/etc/tater-tunnel-control/retained")
+SFTPGO_CONFIG_ROOT = Path("/etc/sftpgo")
+SFTPGO_STATE_ROOT = Path("/var/lib/sftpgo")
+SFTPGO_CADDY_PATH = Path("/etc/caddy/tater-sites/sftpgo-webdav.caddy")
+FSTAB_PATH = Path("/etc/fstab")
 WIREGUARD_HOST = "10.88.0.1"
 CONTAINER_APPS = {"uptime-kuma", "ntfy", "forgejo", "matrix"}
 APP_NAMES = {
@@ -57,7 +62,7 @@ VALID_ACCESS = {
     "ftp": {"disabled", "private", "public"},
     "webdav": {"disabled", "private", "https"},
 }
-VALID_SERVICE_ACTIONS = {"start", "restart", "disable"}
+VALID_SERVICE_ACTIONS = {"start", "restart", "disable", "uninstall"}
 
 
 class ControlHelperError(Exception):
@@ -173,6 +178,7 @@ class ControlHelperService:
             "updates": {"vps": vps_update_snapshot()},
             "capabilities": {
                 "appManagement": True,
+                "appLifecycle": True,
                 "securityAudit": True,
                 "vpsUpdate": True,
             },
@@ -224,11 +230,25 @@ class ControlHelperService:
         action = str(payload.get("action") or "").strip().lower()
         if action not in VALID_SERVICE_ACTIONS:
             raise ControlHelperError("Service action is not allowed")
+        delete_data = payload.get("deleteData", False)
+        if not isinstance(delete_data, bool):
+            raise ControlHelperError("Data deletion must be a boolean")
+        if delete_data and action != "uninstall":
+            raise ControlHelperError("Data deletion is only supported when uninstalling")
+        if action == "uninstall":
+            if payload.get("confirmUninstall") is not True:
+                raise ControlHelperError("Uninstall requires explicit confirmation")
+            if delete_data and (
+                payload.get("confirmDeleteData") is not True
+                or payload.get("confirmation") != APP_NAMES[app]
+            ):
+                raise ControlHelperError("Deleting app data requires the app name and explicit confirmation")
         if app in CONTAINER_APPS:
             script = self._script("manage_vps_app.py")
-            result = run_mutation(
-                [sys.executable, str(script), "action", "--app", app, "--action", action]
-            )
+            command = [sys.executable, str(script), "action", "--app", app, "--action", action]
+            if delete_data:
+                command.append("--delete-data")
+            result = run_mutation(command)
             return {
                 "status": "ok",
                 "app": app,
@@ -236,6 +256,8 @@ class ControlHelperService:
                 "output": result,
                 "snapshot": managed_container_app_snapshot(app),
             }
+        if action == "uninstall":
+            return self._uninstall_native_app(app, delete_data=delete_data)
         unit = "sftpgo.service" if app == "sftpgo" else znc_unit_name()
         if not unit:
             raise ControlHelperError(f"{display_app_name(app)} is not installed")
@@ -266,6 +288,67 @@ class ControlHelperService:
             "passed": completed.returncode == 0,
             "output": output,
         }
+
+    def _uninstall_native_app(self, app: str, *, delete_data: bool) -> dict[str, Any]:
+        snapshot = sftpgo_snapshot() if app == "sftpgo" else znc_snapshot()
+        if not snapshot["installed"]:
+            raise ControlHelperError("The app is not installed")
+        settings = snapshot["settings"]
+        unit = snapshot["service"]["unit"]
+        data_path = None
+        if app == "znc":
+            if len(list(ZNC_UNIT_DIR.glob("znc-*.service"))) > 1:
+                raise ControlHelperError("Multiple ZNC services exist; uninstall them over SSH individually")
+            username = normalize_linux_username(settings.get("user"))
+            account = pwd.getpwnam(username)
+            if account.pw_uid < 1000 or Path(account.pw_dir) == Path("/"):
+                raise ControlHelperError("ZNC removal requires a normal managed user")
+            data_path = Path(account.pw_dir) / ".znc"
+            if delete_data:
+                validate_managed_data_path(data_path, Path(account.pw_dir))
+        elif delete_data:
+            for path in (SFTPGO_CONFIG_ROOT, SFTPGO_STATE_ROOT, SFTPGO_STORAGE_ROOT):
+                validate_managed_data_path(path, path.parent, allow_root_mount=path == SFTPGO_STORAGE_ROOT)
+            if SFTPGO_STORAGE_IMAGE.is_symlink():
+                raise ControlHelperError("Refusing to delete a symlinked storage image")
+
+        if unit:
+            run_mutation(["systemctl", "disable", "--now", unit])
+        if app == "sftpgo":
+            remove_managed_caddy_route(SFTPGO_CADDY_PATH)
+            ports = [("2022", settings.get("sftpAccess") == "public"),
+                     ("2121", settings.get("ftpAccess") == "public"),
+                     ("50000:50100", settings.get("ftpAccess") == "public"),
+                     ("10080", False), ("8080", False)]
+            if delete_data:
+                detach_sftpgo_storage()
+        else:
+            ports = [(str(settings["ircPort"]), False), (str(settings["webPort"]), False)]
+            write_private_json(RETAINED_APP_ROOT / "znc.json", {"user": settings["user"]})
+        if shutil.which("ufw"):
+            for port, public in ports:
+                commands = [["allow", "in", "on", "tater0", "from", "10.88.0.0/24",
+                             "to", WIREGUARD_HOST, "port", port, "proto", "tcp"]]
+                if public:
+                    commands.append(["allow", f"{port}/tcp"])
+                for arguments in commands:
+                    completed = run_command(["ufw", "--force", "delete", *arguments], timeout=20)
+                    if completed.returncode:
+                        raise ControlHelperError(combined_output(completed) or "Firewall cleanup failed")
+
+        output = run_mutation(["apt-get", "purge" if delete_data else "remove", "-y", "--", app])
+        if app == "znc":
+            (ZNC_UNIT_DIR / unit).unlink(missing_ok=True)
+            run_mutation(["systemctl", "daemon-reload"])
+            if delete_data:
+                remove_managed_data(data_path, data_path.parent)
+                (RETAINED_APP_ROOT / "znc.json").unlink(missing_ok=True)
+        elif delete_data:
+            for path in (SFTPGO_STORAGE_ROOT, SFTPGO_STATE_ROOT, SFTPGO_CONFIG_ROOT):
+                remove_managed_data(path, path.parent)
+            SFTPGO_STORAGE_IMAGE.unlink(missing_ok=True)
+        return {"status": "ok", "app": app, "action": "uninstall", "output": output,
+                "snapshot": sftpgo_snapshot() if app == "sftpgo" else znc_snapshot()}
 
     def _configure_sftpgo(self, settings: dict[str, Any]) -> dict[str, Any]:
         sftp_access = normalize_access("sftp", settings.get("sftpAccess"), "private")
@@ -642,6 +725,7 @@ def sftpgo_snapshot() -> dict[str, Any]:
         "id": "sftpgo",
         "name": "SFTPGo",
         "installed": installed,
+        "retainedData": not installed and SFTPGO_ENV_PATH.is_file(),
         "version": command_version(["sftpgo", "--version"]) if installed else "",
         "service": service,
         "settings": {
@@ -661,6 +745,11 @@ def znc_snapshot() -> dict[str, Any]:
     unit = znc_unit_name()
     installed = bool(shutil.which("znc") or unit)
     username = unit.removeprefix("znc-").removesuffix(".service") if unit else ""
+    if not username and not installed:
+        retained = read_json_file(RETAINED_APP_ROOT / "znc.json")
+        candidate = str(retained.get("user") or "")
+        if re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", candidate):
+            username = candidate
     data_dir = ""
     config_path: Path | None = None
     if username:
@@ -682,6 +771,7 @@ def znc_snapshot() -> dict[str, Any]:
         "id": "znc",
         "name": "ZNC",
         "installed": installed,
+        "retainedData": not installed and bool(config_path and config_path.is_file()),
         "version": command_version(["znc", "--version"]) if installed else "",
         "service": systemd_snapshot(unit) if unit else disabled_service_snapshot(),
         "settings": {
@@ -697,11 +787,79 @@ def znc_snapshot() -> dict[str, Any]:
     }
 
 
+def write_private_json(path: Path, body: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    atomic_text(path, json.dumps(body, separators=(",", ":")) + "\n", 0o600)
+
+
+def atomic_text(path: Path, content: str, mode: int) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        os.chmod(temporary_name, mode)
+        os.replace(temporary_name, path)
+    finally:
+        Path(temporary_name).unlink(missing_ok=True)
+
+
+def validate_managed_data_path(path: Path, parent: Path, *, allow_root_mount: bool = False) -> None:
+    if path.parent != parent or path.is_symlink() or parent.is_symlink():
+        raise ControlHelperError("Refusing to delete an unsafe app data path")
+    for directory, children, _files in os.walk(path, followlinks=False):
+        current = Path(directory)
+        if current.is_mount() and not (allow_root_mount and current == path):
+            raise ControlHelperError("Unmount app storage before deleting its data")
+        children[:] = [name for name in children if not (current / name).is_symlink()]
+
+
+def remove_managed_data(path: Path, parent: Path) -> None:
+    validate_managed_data_path(path, parent)
+    if not path.exists():
+        return
+    shutil.rmtree(path)
+
+
+def detach_sftpgo_storage() -> None:
+    if FSTAB_PATH.is_symlink():
+        raise ControlHelperError("Refusing to change a symlinked filesystem table")
+    lines = FSTAB_PATH.read_text(encoding="utf-8").splitlines(keepends=True)
+
+    def managed(line):
+        fields = line.split()
+        return len(fields) >= 2 and fields[:2] == [str(SFTPGO_STORAGE_IMAGE), str(SFTPGO_STORAGE_ROOT)]
+
+    if SFTPGO_STORAGE_ROOT.is_mount():
+        if not any(managed(line) for line in lines):
+            raise ControlHelperError("SFTPGo storage is not the installer-managed filesystem")
+        run_mutation(["umount", str(SFTPGO_STORAGE_ROOT)])
+    if any(managed(line) for line in lines):
+        atomic_text(FSTAB_PATH, "".join(line for line in lines if not managed(line)), 0o644)
+        run_mutation(["systemctl", "daemon-reload"])
+
+
+def remove_managed_caddy_route(path: Path) -> None:
+    if path.is_symlink():
+        raise ControlHelperError("Refusing to change a symlinked app proxy route")
+    if not path.exists():
+        return
+    previous = path.read_text(encoding="utf-8")
+    path.unlink()
+    if not shutil.which("caddy"):
+        return
+    try:
+        run_mutation(["caddy", "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"])
+        run_mutation(["systemctl", "reload", "caddy"])
+    except ControlHelperError:
+        atomic_text(path, previous, 0o644)
+        raise
+
+
 def managed_container_app_snapshot(app: str) -> dict[str, Any]:
     definition = CONTAINER_APP_DEFAULTS[app]
     settings_path = MANAGED_APP_CONFIG_ROOT / app / "settings.json"
     settings = read_json_file(settings_path)
-    installed = bool(settings)
+    installed = bool(settings) and settings.get("installed", True) is True
     active = docker_container_running(str(definition["container"])) if installed else False
     port = int(settings.get("port") or definition["port"])
     access = str(settings.get("access") or "private")
@@ -745,6 +903,7 @@ def managed_container_app_snapshot(app: str) -> dict[str, Any]:
         "id": app,
         "name": APP_NAMES[app],
         "installed": installed,
+        "retainedData": bool(settings) and not installed,
         "version": str(settings.get("version") or ""),
         "service": {
             "unit": f"docker:{definition['container']}" if installed else "",
