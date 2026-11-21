@@ -436,11 +436,11 @@ else
 fi
 if command -v docker >/dev/null 2>&1 && compgen -G '/etc/tater-tunnel-control/apps/*/settings.json' >/dev/null; then
   if nft list chain inet tater_apps_guard private_containers 2>/dev/null \
-    | grep -Eq 'iifname != "tater0" ct original ip daddr 10\.88\.0\.1.*drop' \
+    | grep -Eq 'iifname != "tater0" ct direction original ct original ip daddr 10\.88\.0\.1.*drop' \
     && systemctl is-enabled --quiet tater-tunnel-container-guard; then
-    pass "Private Docker bindings are protected before Docker forwarding rules and at boot"
+    pass "Private Docker bindings protect incoming traffic without blocking replies, including at boot"
   else
-    fail "The persistent private container firewall is missing"
+    fail "The persistent private container firewall is missing or blocks legitimate replies"
   fi
 fi
 

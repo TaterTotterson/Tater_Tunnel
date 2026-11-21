@@ -84,9 +84,11 @@ Raw web ports bind to loopback and `10.88.0.1`; public mode adds only a Caddy
 HTTPS hostname. Application databases are not published to the host network.
 The security audit verifies file modes, Caddy routes, UFW rules, and Docker port
 bindings for each installed app.
-An nftables forwarding guard also rejects traffic addressed to private Docker
-bindings when it arrives outside `tater0`, before Docker forwarding rules run.
-The guard is restored at boot and on Docker restart.
+An nftables forwarding guard also rejects original-direction traffic addressed
+to private Docker bindings when it arrives outside `tater0`, before Docker
+forwarding rules run. Reply packets return through the Docker bridge and are
+not rejected by that ingress rule. The guard is restored at boot and on Docker
+restart, and existing rules are refreshed atomically during VPS updates.
 
 ### Remote Device WireGuard
 

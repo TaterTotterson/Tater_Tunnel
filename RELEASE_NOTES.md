@@ -1,41 +1,34 @@
-# Tater Tunnel v0.5.2
+# Tater Tunnel v0.5.3
 
-Adds complete app lifecycle controls so disabled apps can be enabled or removed
-without getting stuck in the Control Center.
+Fixes private connections to managed Docker apps that appeared to be running
+but could not load through WireGuard.
 
-## App Management
+## Private App Connectivity
 
-- Add a direct **Enable** action for stopped or disabled apps. Uses saved
-  configuration without running the installer again.
-- Add **Uninstall** for SFTPGo, ZNC, Uptime Kuma, ntfy, Forgejo, and Matrix.
-- Keep app data and settings by default when uninstalling. The catalog shows
-  **Data kept** and offers **Reinstall** afterward.
-- Offer permanent data deletion separately. It requires typing the exact app
-  name and confirming; the backend enforces those confirmations too.
-- Remove the selected app's runtime, startup entry, and managed access when
-  uninstalling. Shared Docker images, system dependencies, external storage,
-  and ZNC Linux accounts are kept.
-- Refuse unsafe data paths and unmanaged mounted storage. Multiple ZNC
-  services require manual package removal over SSH.
-
-## Interface Fixes
-
-- Distinguish disabled apps from stopped apps and apps with retained data.
-- Restore controls and clear the progress indicator if a job cannot start.
-- Prevent conflicting app actions while a job is running.
-- Make lifecycle buttons and uninstall confirmation usable on mobile.
+- Correct the container firewall so it permits reply packets returning through
+  Docker's bridge while still blocking incoming connections outside WireGuard.
+- Apply the shared fix to Uptime Kuma, ntfy, Forgejo, and Matrix. SFTPGo and ZNC
+  run natively and are not affected by this Docker firewall issue.
+- Refresh existing container firewall rules atomically during VPS updates,
+  without restarting Docker to apply the rule change. The corrected guard is
+  restored at boot and on Docker restart.
+- Update the security audit to reject the old rule that blocked legitimate
+  replies.
 
 ## Updating
 
-- Update the VPS Agent first, then the Home Agent to get the new controls.
-  Updating does not delete app data or require re-pairing.
-- If an old stuck installation blocks Control Center updates, run the VPS
-  setup script over SSH and choose **Update Tater Tunnel** first.
-- The macOS app, Docker image, and signed VPS archive share the v0.5.2 tag.
+- Install the VPS Agent update from Control Center's **Updates** view, or run
+  the VPS setup script and choose **Update Tater Tunnel**.
+- No managed app reinstall, data deletion, re-pairing, or Home Agent update is
+  required for this fix. The update also replaces any temporary reply-allow
+  rule used to restore access while troubleshooting.
+- The macOS app, Docker image, and signed VPS archive share the v0.5.3 tag.
 
 ## Verification
 
-- All 97 local regression tests pass.
-- Checked desktop and mobile UI behavior with an isolated preview, including
-  Enable, rejected-job recovery, deletion confirmation, and Reinstall states.
-- No live VPS data was deleted during testing.
+- All 100 local regression tests pass, including firewall, audit, and updater
+  checks.
+- Isolated packet-flow tests reproduced the old timeout, verified HTTP 200
+  through the corrected guard, and confirmed off-tunnel access remains blocked.
+- Tested the actual guard script twice to verify rules can be reapplied.
+- Confirmed Kuma access was restored on the live VPS with the temporary rule.

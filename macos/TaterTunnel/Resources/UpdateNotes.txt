@@ -1,1 +1,1 @@
-Adds a full-screen VPS setup console and WireGuard-only browser access for the SFTPGo and ZNC administration pages.
+Fixes private WireGuard connections to Uptime Kuma, ntfy, Forgejo, and Matrix. Update the VPS Agent from Control Center to apply the persistent firewall fix; no app reinstall or re-pairing is needed.

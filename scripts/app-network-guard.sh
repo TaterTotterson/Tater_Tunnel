@@ -17,7 +17,8 @@ cat >> "$guard_file" <<'EOF'
 table inet tater_apps_guard {
   chain private_containers {
     type filter hook forward priority -20; policy accept;
-    iifname != "tater0" ct original ip daddr 10.88.0.1 counter drop
+    # Replies enter through Docker's bridge, not the tunnel interface.
+    iifname != "tater0" ct direction original ct original ip daddr 10.88.0.1 counter drop
   }
 }
 EOF

@@ -316,6 +316,14 @@ reopen_pairing_if_requested() {
   )
 }
 
+refresh_existing_container_guard() {
+  if [ -f /etc/systemd/system/tater-tunnel-container-guard.service ]; then
+    # Update the rules atomically without stopping Docker or dependent apps.
+    bash "$INSTALL_DIR/scripts/app-network-guard.sh"
+    systemctl enable --now tater-tunnel-container-guard >/dev/null
+  fi
+}
+
 print_summary() {
   local service_host="$LISTEN_HOST"
   if [ "$WIREGUARD_MANAGEMENT_ACCESS" = "1" ] && [ "$service_host" = "127.0.0.1" ]; then
@@ -359,5 +367,6 @@ create_service_user
 copy_app_files
 prepare_state
 write_service
+refresh_existing_container_guard
 reopen_pairing_if_requested
 print_summary
